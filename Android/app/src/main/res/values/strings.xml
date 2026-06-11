@@ -12,6 +12,9 @@
     <string name="retry">Retry</string>
     <string name="copy_logs">Copy Logs</string>
     <string name="logs_copied">Logs copied to clipboard</string>
+    <string name="clear_logs">Clear logs</string>
+    <string name="terminal_logs">Terminal Logs</string>
+    <string name="close">Close</string>
     <string name="back">Back</string>
     <string name="start_ap">Start Access Point</string>
     <string name="stop_ap">Stop Access Point</string>

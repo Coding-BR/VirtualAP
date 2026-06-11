@@ -1,6 +1,9 @@
 package com.virtualap.app.ui.screen
 
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.animation.AnimatedContent
+import kotlinx.coroutines.launch
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
@@ -19,6 +22,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -26,9 +30,12 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.virtualap.app.R
 import com.virtualap.app.ui.component.TerminalConsole
 import com.virtualap.app.ui.viewmodel.APConfig
 import com.virtualap.app.ui.viewmodel.APViewModel
+import com.virtualap.app.util.AnsiColorParser
+
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -341,24 +348,22 @@ fun MainScreen(
                             }
                         }
 
-                        // View Logs button — always visible once there are logs
-                        if (vm.logText.isNotBlank() || vm.actionLogs.isNotEmpty()) {
-                            Spacer(Modifier.height(8.dp))
-                            OutlinedButton(
-                                onClick = { vm.openLogSheet() },
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Icon(
-                                    Icons.Default.Terminal,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Spacer(Modifier.width(8.dp))
-                                Text(
-                                    "View Logs",
-                                    style = MaterialTheme.typography.labelLarge
-                                )
-                            }
+                        // View Logs button — always visible
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedButton(
+                            onClick = { vm.openLogSheet() },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(
+                                Icons.Default.Terminal,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                "View Logs",
+                                style = MaterialTheme.typography.labelLarge
+                            )
                         }
 
                         if (vm.config.ssid.isBlank() && !status.running) {
@@ -532,7 +537,7 @@ private fun DashboardStatRow(icon: ImageVector, label: String, value: String) {
 }
 
 // ---------------------------------------------------------------------------
-// Unified Log Bottom Sheet
+// Unified Log Bottom Sheet — Droidspaces-style action bar
 // ---------------------------------------------------------------------------
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -544,19 +549,34 @@ private fun ActionLogsSheet(
     onClear: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val scope = rememberCoroutineScope()
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val buttonShape = RoundedCornerShape(14.dp)
+
+    // Animated dismiss: slide the sheet out first, then notify the caller
+    val animatedDismiss: () -> Unit = animatedDismiss@{
+        if (isProcessing) return@animatedDismiss
+        scope.launch {
+            sheetState.hide()
+            onDismiss()
+        }
+    }
 
     ModalBottomSheet(
-        onDismissRequest = onDismiss,
+        onDismissRequest = onDismiss,   // back-gesture / scrim tap still works normally
         sheetState = sheetState
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp)
-                .padding(bottom = 24.dp)
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 28.dp)
         ) {
+            // Title row
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 14.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -569,34 +589,162 @@ private fun ActionLogsSheet(
                         Spacer(Modifier.width(8.dp))
                     }
                     Text(
-                        if (isProcessing) "Running…" else "Logs",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold
+                        text = if (isProcessing) "Running…" else "Logs",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
                     )
                 }
-                Row {
-                    IconButton(onClick = onClear) {
+                // Close button — Droidspaces style, slides sheet out on press
+                val canClose = !isProcessing
+                Surface(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .clickable(enabled = canClose, onClick = animatedDismiss),
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (canClose) 0.08f else 0.04f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = if (canClose) 0.3f else 0.15f)),
+                    tonalElevation = 0.dp
+                ) {
+                    Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
                         Icon(
-                            Icons.Default.Delete,
-                            contentDescription = "Clear logs",
-                            modifier = Modifier.size(18.dp)
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Close",
+                            modifier = Modifier.size(18.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (canClose) 1f else 0.38f)
                         )
-                    }
-                    if (!isProcessing) {
-                        TextButton(onClick = onDismiss) {
-                            Text("Dismiss")
-                        }
                     }
                 }
             }
-            Spacer(Modifier.height(8.dp))
-            TerminalConsole(
-                logs = if (logs.isEmpty()) listOf(android.util.Log.INFO to "No log output yet.")
-                       else logs,
-                isProcessing = isProcessing,
-                modifier = Modifier.fillMaxWidth(),
-                maxHeight = 480.dp
-            )
+
+            // Action button row — Clear Logs + Copy Logs
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                // Clear Logs button
+                val canClear = logs.isNotEmpty() && !isProcessing
+                Surface(
+                    modifier = Modifier
+                        .height(38.dp)
+                        .weight(1f)
+                        .clip(buttonShape)
+                        .clickable(enabled = canClear, onClick = onClear),
+                    shape = buttonShape,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (canClear) 0.06f else 0.03f),
+                    border = BorderStroke(
+                        1.dp,
+                        if (canClear) MaterialTheme.colorScheme.error.copy(alpha = 0.4f)
+                        else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f)
+                    ),
+                    tonalElevation = 0.dp
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxSize().padding(horizontal = 14.dp),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Delete,
+                            contentDescription = "Clear logs",
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (canClear) 0.8f else 0.38f)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = "Clear logs",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (canClear) 0.8f else 0.38f)
+                        )
+                    }
+                }
+
+                // Copy Logs button
+                val canCopy = logs.isNotEmpty() && !isProcessing
+                Surface(
+                    modifier = Modifier
+                        .height(38.dp)
+                        .weight(1f)
+                        .clip(buttonShape)
+                        .clickable(
+                            enabled = canCopy,
+                            onClick = {
+                                val text = logs.joinToString("\n") { AnsiColorParser.stripAnsi(it.second) }
+                                val clipboard = context.getSystemService(android.content.ClipboardManager::class.java)
+                                val clip = android.content.ClipData.newPlainText("Terminal Logs", text)
+                                clipboard.setPrimaryClip(clip)
+                                android.widget.Toast.makeText(context, R.string.logs_copied, android.widget.Toast.LENGTH_SHORT).show()
+                            }
+                        ),
+                    shape = buttonShape,
+                    color = if (canCopy) MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)
+                            else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.03f),
+                    border = BorderStroke(
+                        1.dp,
+                        if (canCopy) MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)
+                        else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f)
+                    ),
+                    tonalElevation = 0.dp
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxSize().padding(horizontal = 14.dp),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.ContentCopy,
+                            contentDescription = "Copy logs",
+                            modifier = Modifier.size(16.dp),
+                            tint = if (canCopy) MaterialTheme.colorScheme.primary
+                                   else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = "Copy Logs",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = if (canCopy) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
+                        )
+                    }
+                }
+            }
+
+            // Terminal console — empty state shows dim placeholder
+            if (logs.isEmpty()) {
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 88.dp),
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                    tonalElevation = 0.dp
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(20.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "No log output yet.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.32f)
+                        )
+                    }
+                }
+            } else {
+                TerminalConsole(
+                    logs = logs,
+                    isProcessing = isProcessing,
+                    modifier = Modifier.fillMaxWidth(),
+                    maxHeight = 460.dp
+                )
+            }
         }
     }
 }

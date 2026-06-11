@@ -103,8 +103,9 @@ class APViewModel(application: Application) : AndroidViewModel(application) {
         if (cfg.ssid.isBlank() || cfg.password.length < 8) return
         viewModelScope.launch {
             isStarting = true
-            showActionLogs = true
             actionLogs.clear()
+            logText = ""
+            showActionLogs = true
             APManager.start(cfg.ssid, cfg.password, cfg.upstream, cfg.band, cfg.channel.takeIf { it.isNotBlank() }) { level, msg ->
                 actionLogs.add(level to msg)
             }
@@ -117,8 +118,9 @@ class APViewModel(application: Application) : AndroidViewModel(application) {
     fun stop() {
         viewModelScope.launch {
             isStopping = true
-            showActionLogs = true
             actionLogs.clear()
+            logText = ""
+            showActionLogs = true
             APManager.stop { level, msg -> actionLogs.add(level to msg) }
             delay(500)
             refreshStatus()
