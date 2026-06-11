@@ -14,7 +14,7 @@ VirtualAP creates a virtual access point (`ap0`) directly on the phone's WiFi ha
 - **DHCP + DNS** for clients via dnsmasq.
 - **5GHz channel-following** — the AP follows the STA's current channel (same-channel
   concurrency), the root cause of why 5GHz "randomly failed" in older implementations.
-- **~15MB Alpine rootfs** — carries only `hostapd`, `dnsmasq`, and `iw` (many phones ship
+- **4.4MB Alpine rootfs** — carries only `hostapd`, `dnsmasq`, and `iw` (many phones ship
   no `iw` binary); routing and firewall use Android's own `ip`/`iptables`.
 
 ## Repo layout
@@ -30,10 +30,10 @@ VirtualAP/
 
 ```bash
 # 1. Build the Alpine rootfs (needs Docker; cross-builds arm64 via binfmt)
-./rootfs-builder/build_rootfs.sh -a aarch64
+./rootfs-builder/build_rootfs.sh
 
 # 2. Build the Android APK (requires Droidspaces Ubuntu-24.04 container for JDK)
-cd Android && ./gradlew assembleDebug
+cd Android && ./gradlew assembleRelease
 ```
 
 The Gradle `prepareAssets` pre-build task automatically copies `backend/vap.sh`,
