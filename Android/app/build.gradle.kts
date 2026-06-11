@@ -27,6 +27,9 @@ android {
         vectorDrawables {
             useSupportLibrary = true
         }
+        ndk {
+            abiFilters += listOf("arm64-v8a")
+        }
     }
 
     signingConfigs {
@@ -61,12 +64,37 @@ android {
                 enableV4Signing = true
             }
         } else {
-            val fallbackKeystore = file(System.getProperty("user.home") + "/.android/debug.keystore")
-            println("Using fallback debug keystore: ${fallbackKeystore.absolutePath}")
+            var fallbackKeystore = file(System.getProperty("user.home") + "/.android/debug.keystore")
+
+            if (!keystoreFile.exists() && !fallbackKeystore.exists()) {
+                println("WARNING: No keystore found. Generating temporary CI keystore...")
+                val ciKeystore = file("../../ci-debug.keystore")
+                if (!ciKeystore.exists()) {
+                    project.exec {
+                        commandLine(
+                            "keytool", "-genkeypair",
+                            "-v",
+                            "-keystore", ciKeystore.absolutePath,
+                            "-alias", "virtualap",
+                            "-keyalg", "RSA",
+                            "-keysize", "2048",
+                            "-validity", "10000",
+                            "-storetype", "JKS",
+                            "-storepass", "android",
+                            "-keypass", "android",
+                            "-dname", "CN=VirtualAP, OU=Mobile, O=Anonymized, L=Earth, ST=Galaxy, C=UN",
+                            "-sigalg", "SHA256withRSA"
+                        )
+                    }
+                }
+                fallbackKeystore = ciKeystore
+            }
+
+            println("Using fallback keystore: ${fallbackKeystore.absolutePath}")
             getByName("debug") {
                 storeFile = fallbackKeystore
                 storePassword = "android"
-                keyAlias = "androiddebugkey"
+                keyAlias = if (fallbackKeystore.name.contains("ci-debug")) "virtualap" else "androiddebugkey"
                 keyPassword = "android"
             }
             create("release") {
@@ -127,7 +155,7 @@ android {
 // ---------------------------------------------------------------------------
 tasks.register("prepareFonts") {
     doLast {
-        val srcFontDir = file("../../Droidspaces-OSS/Android/app/src/main/res/font")
+        val srcFontDir = file("../../../Droidspaces-OSS/Android/app/src/main/res/font")
         if (!srcFontDir.exists()) {
             println("prepareFonts: Droidspaces-OSS font directory not found, skipping.")
             return@doLast
@@ -148,8 +176,8 @@ tasks.register("prepareFonts") {
 // ---------------------------------------------------------------------------
 tasks.register("prepareAssets") {
     doLast {
-        val toolsSrc = file("../backend")
-        val outDir = file("../out")
+        val toolsSrc = file("../../backend")
+        val outDir = file("../../out")
         val assetTools = file("src/main/assets/backend")
         val assetBin = file("src/main/assets/bin")
         val assetRootfs = file("src/main/assets/rootfs")
