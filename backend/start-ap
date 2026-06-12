@@ -40,6 +40,13 @@ IP_END="192.168.42.50"
 PRIO_TO_SUBNET=7000   # to 192.168.42.0/24 lookup main   (return path)
 PRIO_FROM_AP=7010     # from all iif ap0 lookup <table>  (upstream steering)
 
+# Android's fixed local_network routing table (RouteController::ROUTE_TABLE_LOCAL_NETWORK,
+# constant since Android 5). We mirror the AP subnet into this table so that reply packets
+# from containers (src 172.28.0.0/16) reach VirtualAP clients: Droidspaces installs rule
+# 6095 "from 172.28.0.0/16 lookup local_network", which runs before 6100 (the WAN uplink
+# rule). Without a route here, 6095 misses, 6100 grabs the reply, and it leaks out WAN.
+ANDROID_LOCAL_NETWORK_TABLE=97
+
 # Defaults (overridden by ap.conf, then by CLI flags)
 PHY_IFACE="wlan0"
 UPSTREAM="auto"
@@ -274,6 +281,7 @@ teardown() {
     "$IPT" -D FORWARD -o "$AP_IFACE" -j ACCEPT 2>/dev/null || true
 
     "$IP" route del "$IP_NET" dev "$AP_IFACE" table main 2>/dev/null || true
+    "$IP" route del "$IP_NET" dev "$AP_IFACE" table "$ANDROID_LOCAL_NETWORK_TABLE" 2>/dev/null || true
 
     # Restore ip_forward only if we were the ones who enabled it
     if [ -f "$STATE_FILE" ]; then
@@ -319,6 +327,12 @@ config_network() {
     # Connected route in main ("replace" - restarts must not stack duplicates)
     "$IP" route replace "$IP_NET" dev "$AP_IFACE" src "$IP_GW" proto static scope link table main \
         || { error "Failed to add subnet route to main"; return 1; }
+
+    # Mirror route in local_network table (97) so container reply packets
+    # (src 172.28.0.0/16) reach VirtualAP clients via Droidspaces rule 6095.
+    "$IP" route replace "$IP_NET" dev "$AP_IFACE" src "$IP_GW" proto static scope link \
+        table "$ANDROID_LOCAL_NETWORK_TABLE" 2>/dev/null \
+        || warn "Could not add subnet route to local_network table ($ANDROID_LOCAL_NETWORK_TABLE) - port forwards from containers may not work"
 
     # Return path: replies/forwards TO the AP subnet resolve via main, above
     # every netd rule (incl. VPN catch-alls)
