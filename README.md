@@ -54,14 +54,32 @@ Upon first execution, the application validates root privileges and deploys the 
 ## Routing and Architecture
 
 ```
+Client Outbound:
 client ➔ ap0 (Gateway IP, hostapd)
        ➔ ip rule pref 7010: from all iif ap0 lookup <upstream table>
        ➔ MASQUERADE (-s <subnet> ! -d <subnet>)
        ➔ Internet or VPN tunnel
+
+Client Inbound / Replies:
 replies ➔ ip rule pref 7000: to <subnet> lookup main ➔ ap0
 ```
 
 The routing rules are configured with high priority (7000 and 7010) to sit above the Android netd rule range. This prevents VPN configuration overrides from hijacking client traffic and bypasses the native unreachable guard rules.
+
+### Container Port Forwarding Integration
+
+To support accessing containerized services (such as those running inside Droidspaces) from devices connected to the VirtualAP hotspot, the routing engine mirrors the access point subnet into Android's default local network routing table (table 97):
+
+```
+Client ➔ Gateway IP (Port Forwarded Port)
+       ➔ DNAT (host port redirected to container IP 172.28.0.0/16)
+       ➔ Container responds to Client IP (<subnet>)
+       ➔ Android Rule 6095 matches: from 172.28.0.0/16 lookup local_network (table 97)
+       ➔ Route lookup matches mirrored subnet route: <subnet> dev ap0
+       ➔ Packet successfully routed back to Client via ap0
+```
+
+Without mirroring the route to table 97, Android's policy routing for the container subnet would fall through to the physical WAN interface table, causing reply packets to leak to the external WAN and breaking the port-forwarding connection.
 
 ## License
 
