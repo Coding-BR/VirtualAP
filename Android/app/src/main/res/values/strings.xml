@@ -73,4 +73,16 @@
     <string name="root_revoked_title">Root access revoked</string>
     <string name="root_revoked_desc">VirtualAP can no longer access root. Open your root manager and re-grant access, then retry.</string>
     <string name="auto_label">Auto</string>
+
+    <!-- About Section -->
+    <string name="about_header">About</string>
+    <string name="about_virtualap">About VirtualAP</string>
+    <string name="about_description">Turn your rooted Android phone into a real wireless access point — powered by a lightweight Alpine chroot running hostapd and dnsmasq.</string>
+    <string name="maintainer_header">Maintainer</string>
+    <string name="maintainer_name">ravindu644</string>
+    <string name="maintainer_role">Maintainer</string>
+    <string name="source_code">Source Code</string>
+    <string name="github">GitHub</string>
+    <string name="ok">OK</string>
+    <string name="unknown">Unknown</string>
 </resources>
