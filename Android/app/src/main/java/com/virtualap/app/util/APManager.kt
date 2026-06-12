@@ -10,6 +10,7 @@ data class APStatus(
     val hostapd: String = "dead",
     val dnsmasq: String = "dead",
     val gateway: String = "192.168.42.1",
+    val dnsServers: String? = null,
     val clients: Int = 0,
     val ssid: String? = null,
     val band: String? = null,
@@ -41,6 +42,7 @@ object APManager {
             hostapd = kv["hostapd"] ?: "dead",
             dnsmasq = kv["dnsmasq"] ?: "dead",
             gateway = kv["gateway"] ?: "192.168.42.1",
+            dnsServers = kv["dns_servers"],
             clients = kv["clients"]?.toIntOrNull() ?: 0,
             ssid = kv["ssid"],
             band = kv["band"],
@@ -54,12 +56,13 @@ object APManager {
 
     suspend fun start(
         ssid: String, password: String, upstream: String,
-        band: String, channel: String?,
+        band: String, channel: String?, gateway: String, dnsServers: String?,
         onLine: (Int, String) -> Unit
     ): Boolean = withContext(Dispatchers.IO) {
         val sq = { s: String -> "'" + s.replace("'", "'\\''") + "'" }
         val channelVal = channel ?: ""
-        val cmd = "${Backend.startAp} start -s ${sq(ssid)} -p ${sq(password)} -o ${sq(upstream)} -b ${sq(band)} -c ${sq(channelVal)}"
+        val dnsVal = dnsServers ?: ""
+        val cmd = "${Backend.startAp} start -s ${sq(ssid)} -p ${sq(password)} -o ${sq(upstream)} -b ${sq(band)} -c ${sq(channelVal)} -g ${sq(gateway)} -d ${sq(dnsVal)}"
 
         val outputList = object : com.topjohnwu.superuser.CallbackList<String>() {
             override fun onAddElement(e: String?) {

@@ -33,6 +33,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.ui.res.stringResource
 import com.virtualap.app.R
 import com.virtualap.app.ui.component.TerminalConsole
@@ -54,6 +55,7 @@ fun MainScreen(
     Scaffold(
         modifier = Modifier
             .fillMaxSize()
+            .imePadding()
             .pointerInput(Unit) {
                 detectTapGestures(onTap = {
                     focusManager.clearFocus()

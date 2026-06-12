@@ -31,9 +31,9 @@ IPT="/system/bin/iptables"
 # Network constants
 AP_IFACE="ap0"
 IP_GW="192.168.42.1"
-IP_NET="192.168.42.0/24"
-IP_BEGIN="192.168.42.10"
-IP_END="192.168.42.50"
+IP_NET=""
+IP_BEGIN=""
+IP_END=""
 
 # Pinned rule priorities. Above netd's whole range (10000+) so they always
 # win, in their own block clear of Droidspaces' 6090-6100.
@@ -54,6 +54,7 @@ SSID=""
 PASSWORD=""
 BAND="2"
 CHANNEL=""
+DNS_SERVERS=""
 
 SCRIPT_NAME="$(basename "$0")"
 # vap.sh lives next to this script (both run from the app's files dir,
@@ -130,6 +131,8 @@ SSID='$(sq "$SSID")'
 PASSWORD='$(sq "$PASSWORD")'
 BAND='$(sq "$BAND")'
 CHANNEL='$(sq "$CHANNEL")'
+IP_GW='$(sq "$IP_GW")'
+DNS_SERVERS='$(sq "$DNS_SERVERS")'
 EOF
 }
 
@@ -253,6 +256,31 @@ pick_channel() {
     fi
 }
 
+# --- Subnet helper ---
+
+calculate_subnet() {
+    local ip="$1"
+    # Match standard IPv4 format: A.B.C.D where octets are 0-255
+    if ! echo "$ip" | grep -Eq '^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$'; then
+        return 1
+    fi
+
+    # Validate that last octet is not 0 or 255
+    local last_octet
+    last_octet=$(echo "$ip" | cut -d. -f4)
+    if [ "$last_octet" -eq 0 ] || [ "$last_octet" -eq 255 ]; then
+        return 1
+    fi
+
+    local base
+    base=$(echo "$ip" | cut -d. -f1-3)
+    IP_GW="$ip"
+    IP_NET="$base.0/24"
+    IP_BEGIN="$base.10"
+    IP_END="$base.50"
+    return 0
+}
+
 # --- Prerequisites ---
 
 check_prerequisites() {
@@ -362,6 +390,8 @@ upstream_iface=$UPSTREAM_IFACE_RESOLVED
 band=$BAND
 channel=$CHANNEL
 ssid=$SSID
+gateway=$IP_GW
+dns_servers=$DNS_SERVERS
 prev_ip_forward=$prev_fwd
 started=$(date '+%Y-%m-%d %H:%M:%S')
 EOF
@@ -400,6 +430,24 @@ wpa_key_mgmt=WPA-PSK
 rsn_pairwise=CCMP
 EOF
 
+    local dns_config=""
+    if [ -n "$DNS_SERVERS" ]; then
+        dns_config="no-resolv"
+        local old_ifs="$IFS"
+        IFS=","
+        for dns in $DNS_SERVERS; do
+            local clean_dns
+            clean_dns=$(echo "$dns" | tr -d '[:space:]')
+            if [ -n "$clean_dns" ]; then
+                dns_config="$dns_config
+server=$clean_dns"
+            fi
+        done
+        IFS="$old_ifs"
+    else
+        dns_config="resolv-file=/etc/resolv.conf"
+    fi
+
     run_in_chroot "cat > /run/dnsmasq.conf" <<EOF
 interface=$AP_IFACE
 bind-interfaces
@@ -409,7 +457,7 @@ dhcp-range=$IP_BEGIN,$IP_END,12h
 dhcp-option=option:router,$IP_GW
 dhcp-option=option:dns-server,$IP_GW
 dhcp-leasefile=/run/dnsmasq.leases
-resolv-file=/etc/resolv.conf
+$dns_config
 no-hosts
 pid-file=/run/dnsmasq.pid
 user=root
@@ -535,7 +583,7 @@ cmd_status() {
     echo "gateway=$IP_GW"
     echo "clients=$clients"
     if [ -f "$STATE_FILE" ]; then
-        grep -E '^(ssid|band|channel|upstream|upstream_table|upstream_iface|started)=' "$STATE_FILE"
+        grep -E '^(ssid|band|channel|upstream|upstream_table|upstream_iface|gateway|dns_servers|started)=' "$STATE_FILE"
     fi
 }
 
@@ -573,6 +621,8 @@ print_usage() {
     echo "  -o <iface>     Upstream interface, or 'auto' (default: auto)"
     echo "  -b <band>      2 = 2.4GHz (default), 5 = 5GHz"
     echo "  -c <channel>   Channel (auto-picked / STA-followed when omitted)"
+    echo "  -g <gateway>   Custom gateway IP (default: 192.168.42.1)"
+    echo "  -d <dns>       Comma-separated list of upstream DNS servers"
     echo "  -w <iface>     Physical WiFi interface (default: wlan0)"
     echo ""
     echo "Saved settings in $CONF_FILE are reused when flags are omitted."
@@ -584,7 +634,7 @@ COMMAND="$1"
 # Saved config provides defaults; CLI flags override
 load_conf
 
-while getopts "s:p:o:b:c:w:h" opt 2>/dev/null; do
+while getopts "s:p:o:b:c:w:g:d:h" opt 2>/dev/null; do
     case $opt in
         s) SSID="$OPTARG" ;;
         p) PASSWORD="$OPTARG" ;;
@@ -592,10 +642,17 @@ while getopts "s:p:o:b:c:w:h" opt 2>/dev/null; do
         b) BAND="$OPTARG" ;;
         c) CHANNEL="$OPTARG" ;;
         w) PHY_IFACE="$OPTARG" ;;
+        g) IP_GW="$OPTARG" ;;
+        d) DNS_SERVERS="$OPTARG" ;;
         h) print_usage; exit 0 ;;
         *) print_usage; exit 1 ;;
     esac
 done
+
+if ! calculate_subnet "$IP_GW"; then
+    error "Invalid gateway IP address: '$IP_GW'"
+    exit 1
+fi
 
 case "$COMMAND" in
     start)      cmd_start ;;

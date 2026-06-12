@@ -23,6 +23,7 @@ import com.virtualap.app.ui.screen.RootCheckScreen
 import com.virtualap.app.ui.screen.SetupScreen
 import com.virtualap.app.ui.screen.SettingsScreen
 import com.virtualap.app.ui.theme.VirtualAPTheme
+import com.virtualap.app.ui.viewmodel.APViewModel
 import com.virtualap.app.ui.viewmodel.AppViewModel
 import com.virtualap.app.ui.viewmodel.InstallStatus
 import com.virtualap.app.util.PreferencesManager
@@ -35,6 +36,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             val appVm: AppViewModel = viewModel()
+            val apVm: APViewModel = viewModel()
             val systemDark = isSystemInDarkTheme()
             val darkTheme = if (appVm.followSystemTheme) systemDark else appVm.darkThemeEnabled
 
@@ -92,12 +94,14 @@ class MainActivity : ComponentActivity() {
                         }
                         composable(Screens.MAIN) {
                             MainScreen(
+                                vm = apVm,
                                 onNavigateToSettings = { navController.navigate(Screens.SETTINGS) }
                             )
                         }
                         composable(Screens.SETTINGS) {
                             SettingsScreen(
                                 appVm = appVm,
+                                apVm = apVm,
                                 onBack = { navController.popBackStack() }
                             )
                         }

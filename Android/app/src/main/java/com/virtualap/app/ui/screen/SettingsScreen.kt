@@ -12,10 +12,13 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
@@ -29,27 +32,55 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.virtualap.app.R
 import com.virtualap.app.ui.component.SwitchItem
 import com.virtualap.app.ui.theme.ThemePalette
+import com.virtualap.app.ui.viewmodel.APViewModel
 import com.virtualap.app.ui.viewmodel.AppViewModel
+
+// IPv4 regex: A.B.C.D where each octet is 0-255, last octet not 0 or 255
+private val ipv4Regex = Regex(
+    "^(25[0-5]|2[0-4]\\d|[01]?\\d\\d?)" +
+    "\\.(25[0-5]|2[0-4]\\d|[01]?\\d\\d?)" +
+    "\\.(25[0-5]|2[0-4]\\d|[01]?\\d\\d?)" +
+    "\\.(25[0-4]|2[0-4]\\d|[01]?\\d[1-9]|[01]?[1-9]\\d?|[1-9])$"
+)
+
+private fun isValidIpv4(ip: String): Boolean = ipv4Regex.matches(ip.trim())
+
+private fun isValidDnsServers(dns: String): Boolean {
+    if (dns.isBlank()) return true  // empty = auto, that's fine
+    return dns.split(",").all { isValidIpv4(it.trim()) }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     appVm: AppViewModel,
+    apVm: APViewModel,
     onBack: () -> Unit = {}
 ) {
     // About dialog state
     var showAboutDialog by remember { mutableStateOf(false) }
+    val focusManager = LocalFocusManager.current
 
     Scaffold(
+        modifier = Modifier
+            .fillMaxSize()
+            .imePadding()
+            .pointerInput(Unit) {
+                detectTapGestures(onTap = { focusManager.clearFocus() })
+            },
         topBar = {
             TopAppBar(
                 title = { Text(stringResource(R.string.settings_title), fontWeight = FontWeight.Bold) },
@@ -145,6 +176,14 @@ fun SettingsScreen(
 
             item { HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp)) }
 
+            // Hotspot Settings Section
+            item { SettingsSectionHeader(stringResource(R.string.hotspot_settings_header)) }
+            item {
+                HotspotSettingsCard(apVm = apVm)
+            }
+
+            item { HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp)) }
+
             // About Section
             item {
                 SettingsSectionHeader(stringResource(R.string.about_header))
@@ -174,6 +213,91 @@ fun SettingsScreen(
     // About Dialog
     if (showAboutDialog) {
         AboutDialog(onDismiss = { showAboutDialog = false })
+    }
+}
+
+@Composable
+private fun HotspotSettingsCard(apVm: APViewModel) {
+    // Local transient edit state — committed to the ViewModel on valid change
+    var gatewayText by remember(apVm.config.gateway) { mutableStateOf(apVm.config.gateway) }
+    var dnsText     by remember(apVm.config.dnsServers) { mutableStateOf(apVm.config.dnsServers) }
+
+    val gatewayError = gatewayText.isNotBlank() && !isValidIpv4(gatewayText)
+    val dnsError     = !isValidDnsServers(dnsText)
+
+    SettingsCard {
+        Column(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            // --- Gateway IP ---
+            OutlinedTextField(
+                value = gatewayText,
+                onValueChange = { v ->
+                    gatewayText = v
+                    if (isValidIpv4(v)) {
+                        apVm.config = apVm.config.copy(gateway = v.trim())
+                    }
+                },
+                label = { Text(stringResource(R.string.gateway_ip_label)) },
+                placeholder = { Text(stringResource(R.string.gateway_ip_placeholder)) },
+                supportingText = {
+                    if (gatewayError)
+                        Text(stringResource(R.string.gateway_ip_error), color = MaterialTheme.colorScheme.error)
+                    else
+                        Text(stringResource(R.string.gateway_ip_desc), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                },
+                isError = gatewayError,
+                leadingIcon = {
+                    Icon(Icons.Default.Router, contentDescription = null)
+                },
+                trailingIcon = {
+                    if (gatewayError)
+                        Icon(Icons.Default.Error, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+                },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Number,
+                    imeAction = ImeAction.Next
+                ),
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            // --- DNS Servers ---
+            OutlinedTextField(
+                value = dnsText,
+                onValueChange = { v ->
+                    dnsText = v
+                    if (isValidDnsServers(v)) {
+                        apVm.config = apVm.config.copy(dnsServers = v.trim())
+                    }
+                },
+                label = { Text(stringResource(R.string.dns_servers_label)) },
+                placeholder = { Text(stringResource(R.string.dns_servers_placeholder)) },
+                supportingText = {
+                    if (dnsError)
+                        Text(stringResource(R.string.dns_servers_error), color = MaterialTheme.colorScheme.error)
+                    else
+                        Text(stringResource(R.string.dns_servers_desc), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                },
+                isError = dnsError,
+                leadingIcon = {
+                    Icon(Icons.Default.Dns, contentDescription = null)
+                },
+                trailingIcon = {
+                    if (dnsError)
+                        Icon(Icons.Default.Error, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+                    else if (dnsText.isNotBlank() && !dnsError)
+                        Icon(Icons.Default.CheckCircle, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Ascii,
+                    imeAction = ImeAction.Done
+                ),
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
     }
 }
 

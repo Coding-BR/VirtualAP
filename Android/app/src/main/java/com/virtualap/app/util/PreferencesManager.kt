@@ -75,6 +75,14 @@ class PreferencesManager private constructor(context: Context) {
         get() = prefs.getString(Constants.KEY_AP_UPSTREAM, "auto") ?: "auto"
         set(value) { prefs.edit().putString(Constants.KEY_AP_UPSTREAM, value).apply() }
 
+    var apGateway: String
+        get() = prefs.getString(Constants.KEY_AP_GATEWAY, "192.168.42.1") ?: "192.168.42.1"
+        set(value) { prefs.edit().putString(Constants.KEY_AP_GATEWAY, value).apply() }
+
+    var apDnsServers: String
+        get() = prefs.getString(Constants.KEY_AP_DNS, "") ?: ""
+        set(value) { prefs.edit().putString(Constants.KEY_AP_DNS, value).apply() }
+
     var hasSeenRootCheck: Boolean
         get() = prefs.getBoolean(Constants.KEY_HAS_SEEN_ROOT_CHECK, false)
         set(value) { prefs.edit().putBoolean(Constants.KEY_HAS_SEEN_ROOT_CHECK, value).apply() }

@@ -18,6 +18,8 @@ object Constants {
     const val KEY_AP_BAND = "ap_band"
     const val KEY_AP_CHANNEL = "ap_channel"
     const val KEY_AP_UPSTREAM = "ap_upstream"
+    const val KEY_AP_GATEWAY = "ap_gateway"
+    const val KEY_AP_DNS = "ap_dns"
     const val KEY_HAS_SEEN_ROOT_CHECK = "has_seen_root_check"
     const val KEY_ROOTFS_VERSION = "rootfs_version"
 }
