@@ -186,45 +186,30 @@ tasks.register("prepareAssets") {
 
         // Copy vap.sh
         val vapSh = File(toolsSrc, "vap.sh")
-        if (vapSh.exists()) {
-            vapSh.copyTo(File(assetTools, "vap.sh"), overwrite = true)
-            println("prepareAssets: copied vap.sh")
-        } else {
-            println("prepareAssets: vap.sh not found at ${vapSh.absolutePath}, skipping.")
-        }
+        require(vapSh.exists()) { "prepareAssets: vap.sh not found at ${vapSh.absolutePath}" }
+        vapSh.copyTo(File(assetTools, "vap.sh"), overwrite = true)
+        println("prepareAssets: copied vap.sh")
 
         // Copy start-ap
         val startAp = File(toolsSrc, "start-ap")
-        if (startAp.exists()) {
-            startAp.copyTo(File(assetTools, "start-ap"), overwrite = true)
-            println("prepareAssets: copied start-ap")
-        } else {
-            println("prepareAssets: start-ap not found at ${startAp.absolutePath}, skipping.")
-        }
+        require(startAp.exists()) { "prepareAssets: start-ap not found at ${startAp.absolutePath}" }
+        startAp.copyTo(File(assetTools, "start-ap"), overwrite = true)
+        println("prepareAssets: copied start-ap")
 
-        // Copy busybox
+        // Copy busybox (extracted from rootfs by build_rootfs.sh)
         val busybox = File(toolsSrc, "bin/busybox")
-        if (busybox.exists()) {
-            busybox.copyTo(File(assetBin, "busybox"), overwrite = true)
-            println("prepareAssets: copied busybox")
-        } else {
-            println("prepareAssets: busybox not found at ${busybox.absolutePath}, skipping.")
-        }
+        require(busybox.exists()) { "prepareAssets: busybox not found at ${busybox.absolutePath}. Run rootfs-builder/build_rootfs.sh first." }
+        busybox.copyTo(File(assetBin, "busybox"), overwrite = true)
+        println("prepareAssets: copied busybox")
 
         // Copy latest rootfs tarball
-        if (outDir.exists()) {
-            val tarballs = outDir.listFiles()?.filter { it.name.endsWith(".tar.xz") }
-                ?.sortedByDescending { it.lastModified() }
-            val latest = tarballs?.firstOrNull()
-            if (latest != null) {
-                latest.copyTo(File(assetRootfs, latest.name), overwrite = true)
-                println("prepareAssets: copied rootfs tarball ${latest.name}")
-            } else {
-                println("prepareAssets: no .tar.xz tarball found in ${outDir.absolutePath}, skipping.")
-            }
-        } else {
-            println("prepareAssets: out/ directory not found at ${outDir.absolutePath}, skipping.")
-        }
+        require(outDir.exists()) { "prepareAssets: out/ directory not found at ${outDir.absolutePath}. Run rootfs-builder/build_rootfs.sh first." }
+        val tarballs = outDir.listFiles()?.filter { it.name.endsWith(".tar.xz") }
+            ?.sortedByDescending { it.lastModified() }
+        val latest = tarballs?.firstOrNull()
+        require(latest != null) { "prepareAssets: no .tar.xz tarball found in ${outDir.absolutePath}. Run rootfs-builder/build_rootfs.sh first." }
+        latest.copyTo(File(assetRootfs, latest.name), overwrite = true)
+        println("prepareAssets: copied rootfs tarball ${latest.name}")
     }
 }
 

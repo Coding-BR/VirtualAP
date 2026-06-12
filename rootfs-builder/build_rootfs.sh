@@ -56,6 +56,15 @@ docker buildx build \
   -f "$DOCKERFILE" \
   "$(dirname "$0")"
 
+# Extract the statically-linked busybox from the rootfs for host-side use
+# (Android lacks unshare/nsenter; the chroot engine needs this binary)
+BUSYBOX_DST="$(dirname "$0")/../backend/bin"
+mkdir -p "$BUSYBOX_DST"
+echo "Extracting busybox.static from rootfs tarball..."
+tar -xf "$TEMP_TAR" -O bin/busybox.static > "$BUSYBOX_DST/busybox"
+chmod +x "$BUSYBOX_DST/busybox"
+echo "Extracted busybox to $BUSYBOX_DST/busybox ($(du -h "$BUSYBOX_DST/busybox" | cut -f1))"
+
 echo "Compressing (xz -9, multi-threaded)..."
 xz -T0 -9 -f "$TEMP_TAR"
 mv "${TEMP_TAR}.xz" "$FINAL_NAME"
