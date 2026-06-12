@@ -48,6 +48,9 @@ fun SetupScreen(
         val result = VirtualAPInstaller.install(context) { level, message ->
             logs.add(level to message)
         }
+        // Surface the failure reason in the terminal - onProgress doesn't cover
+        // every failure path (e.g. deployAsset errors are only in the Result).
+        result.exceptionOrNull()?.let { logs.add(Log.ERROR to "[ERROR] ${it.message}") }
         setupState = if (result.isSuccess) SetupState.SUCCESS else SetupState.ERROR
     }
 

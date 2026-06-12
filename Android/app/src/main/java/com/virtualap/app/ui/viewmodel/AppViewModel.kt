@@ -11,6 +11,7 @@ import com.virtualap.app.util.APManager
 import com.virtualap.app.util.PreferencesManager
 import com.virtualap.app.util.RootChecker
 import com.virtualap.app.util.RootStatus
+import com.virtualap.app.util.VirtualAPInstaller
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -106,7 +107,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun checkInstalled() {
         viewModelScope.launch {
             installStatus = InstallStatus.Checking
-            val installed = withContext(Dispatchers.IO) { APManager.isInstalled() }
+            val app = getApplication<Application>()
+            val installed = withContext(Dispatchers.IO) {
+                // An outdated rootfs (APK update shipped a newer tarball) counts
+                // as not-installed so the setup flow re-extracts it.
+                APManager.isInstalled() && !VirtualAPInstaller.rootfsUpdateAvailable(app)
+            }
             installStatus = if (installed) InstallStatus.Installed else InstallStatus.NotInstalled
         }
     }

@@ -26,6 +26,7 @@ import com.virtualap.app.ui.viewmodel.AppViewModel
 import com.virtualap.app.ui.viewmodel.InstallStatus
 import com.virtualap.app.util.PreferencesManager
 import com.virtualap.app.util.RootStatus
+import com.virtualap.app.util.VirtualAPInstaller
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -49,9 +50,12 @@ class MainActivity : ComponentActivity() {
                     // Compute start destination once from SharedPreferences (synchronous read)
                     val prefs = remember { PreferencesManager.getInstance(applicationContext) }
                     val startDestination = remember {
+                        // An APK update can ship a newer rootfs tarball - send the
+                        // user back through setup so it gets re-extracted.
+                        val rootfsOutdated = VirtualAPInstaller.rootfsUpdateAvailable(applicationContext)
                         when {
                             !prefs.hasSeenRootCheck || !prefs.rootAvailable -> Screens.ROOT_CHECK
-                            prefs.isInstalled -> Screens.MAIN
+                            prefs.isInstalled && !rootfsOutdated -> Screens.MAIN
                             else -> Screens.SETUP
                         }
                     }

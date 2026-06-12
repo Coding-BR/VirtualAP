@@ -25,7 +25,7 @@ data class NetworkIface(val name: String, val ip: String?)
 
 object APManager {
     suspend fun getStatus(): APStatus = withContext(Dispatchers.IO) {
-        val result = Shell.cmd("${Constants.START_AP} status 2>/dev/null").exec()
+        val result = Shell.cmd("${Backend.startAp} status 2>/dev/null").exec()
         if (!result.isSuccess) return@withContext APStatus()
         parseStatus(result.out.joinToString("\n"))
     }
@@ -59,7 +59,7 @@ object APManager {
     ): Boolean = withContext(Dispatchers.IO) {
         val sq = { s: String -> "'" + s.replace("'", "'\\''") + "'" }
         val channelVal = channel ?: ""
-        val cmd = "${Constants.START_AP} start -s ${sq(ssid)} -p ${sq(password)} -o ${sq(upstream)} -b ${sq(band)} -c ${sq(channelVal)}"
+        val cmd = "${Backend.startAp} start -s ${sq(ssid)} -p ${sq(password)} -o ${sq(upstream)} -b ${sq(band)} -c ${sq(channelVal)}"
 
         val outputList = object : com.topjohnwu.superuser.CallbackList<String>() {
             override fun onAddElement(e: String?) {
@@ -80,12 +80,12 @@ object APManager {
         val outputList = object : com.topjohnwu.superuser.CallbackList<String>() {
             override fun onAddElement(e: String?) { e?.let { onLine(Log.INFO, it) } }
         }
-        Shell.cmd("${Constants.START_AP} stop").to(outputList).exec().isSuccess
+        Shell.cmd("${Backend.startAp} stop").to(outputList).exec().isSuccess
     }
 
 
     suspend fun getInterfaces(): List<NetworkIface> = withContext(Dispatchers.IO) {
-        val result = Shell.cmd("${Constants.START_AP} interfaces 2>/dev/null").exec()
+        val result = Shell.cmd("${Backend.startAp} interfaces 2>/dev/null").exec()
         if (!result.isSuccess) return@withContext emptyList()
         result.out.mapNotNull { line ->
             val parts = line.trim().split(":", limit = 2)
@@ -106,6 +106,10 @@ object APManager {
 
 
     suspend fun isInstalled(): Boolean = withContext(Dispatchers.IO) {
-        Shell.cmd("test -x ${Constants.VAP_DIR}/start-ap && echo ok").exec().out.any { it.contains("ok") }
+        // Scripts run from app files now; "installed" means the root-owned
+        // payload is in place: busybox + an extracted Alpine rootfs.
+        Shell.cmd(
+            "test -x ${Constants.BUSYBOX} && test -f ${Constants.VAP_DIR}/rootfs/etc/alpine-release && echo ok"
+        ).exec().out.any { it.contains("ok") }
     }
 }

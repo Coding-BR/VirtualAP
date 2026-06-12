@@ -439,7 +439,9 @@ EOF
 
 cmd_start() {
     # Ensure the chroot environment is up (idempotent)
-    sh "$BASE_DIR/vap.sh" start -s || { error "Failed to start chroot environment"; exit 1; }
+    # vap.sh lives next to this script (both run from the app's files dir,
+    # re-extracted from APK assets every launch - see Backend.kt), not in BASE_DIR.
+    sh "$(dirname "$0")/vap.sh" start -s || { error "Failed to start chroot environment"; exit 1; }
 
     [ -z "$SSID" ] && { error "SSID not set (use -s or save a config first)"; exit 1; }
     if [ "$(printf %s "$PASSWORD" | wc -c)" -lt 8 ]; then

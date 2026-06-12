@@ -2,6 +2,7 @@ package com.virtualap.app
 
 import android.app.Application
 import com.topjohnwu.superuser.Shell
+import com.virtualap.app.util.Backend
 
 class VirtualAPApplication : Application() {
     override fun onCreate() {
@@ -12,5 +13,7 @@ class VirtualAPApplication : Application() {
                 .setFlags(Shell.FLAG_REDIRECT_STDERR)
                 .setTimeout(30)
         )
+        // Synchronous: everything that shells out depends on these paths.
+        Backend.install(this)
     }
 }
