@@ -36,7 +36,7 @@ class APViewModel(application: Application) : AndroidViewModel(application) {
             ssid = prefs.apSsid,
             password = prefs.apPassword,
             band = prefs.apBand,
-            channel = prefs.apChannel,
+            channel = validChannelForBand(prefs.apBand, prefs.apChannel),
             upstream = prefs.apUpstream
         )
     )
@@ -145,4 +145,18 @@ class APViewModel(application: Application) : AndroidViewModel(application) {
 
     fun openLogSheet() { showActionLogs = true }
     fun dismissActionLogs() { showActionLogs = false }
+
+    companion object {
+        // Must be companion (not instance method) — called from property initializer
+        // before the instance exists.
+        fun validChannelForBand(band: String, channel: String): String {
+            if (channel.isBlank()) return ""
+            val valid = if (band == "5") {
+                setOf("36", "40", "44", "48", "149", "153", "157", "161", "165")
+            } else {
+                (1..11).map { "$it" }.toSet()
+            }
+            return if (channel in valid) channel else ""
+        }
+    }
 }
