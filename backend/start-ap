@@ -57,6 +57,27 @@ CHANNEL=""
 DNS_SERVERS=""
 HIDDEN="0"
 
+# --- Droidspaces container integration (managed mode) ---
+# When CONTAINER is non-empty, VirtualAP runs in "managed" mode: ap0 becomes a
+# dumb bridged port on VAP_BRIDGE (host netns), one veth peer is handed to the
+# chosen Droidspaces container as VAP_PORT, and the CONTAINER owns all L3
+# (DHCP/DNS/NAT/firewall). VirtualAP does no IP/forwarding/rules/dnsmasq here.
+# Names are deterministic and distinct from Droidspaces' own ds-br0 / ds-lan.
+CONTAINER=""
+VAP_BRIDGE="vap-br0"      # host-side bridge
+VAP_VETH_HOST="vap-v0"    # host-side veth (bridge port)
+VAP_VETH_PEER="vap-p0"    # peer veth before it enters the container
+VAP_PORT="vaplan0"        # interface name inside the container
+VAP_LAN_GW="192.168.40.1" # LAN gateway we provision inside OpenWRT (distinct from ds-br0/ap0)
+VAP_LAN_NET="192.168.40.0/24"
+
+# Droidspaces CLI: prefer the install path, fall back to PATH.
+if [ -x "/data/local/Droidspaces/bin/droidspaces" ]; then
+    DROIDSPACES="/data/local/Droidspaces/bin/droidspaces"
+else
+    DROIDSPACES="droidspaces"
+fi
+
 SCRIPT_NAME="$(basename "$0")"
 # vap.sh lives next to this script (both run from the app's files dir,
 # re-extracted from APK assets every launch - see Backend.kt), not in BASE_DIR.
@@ -135,7 +156,26 @@ CHANNEL='$(sq "$CHANNEL")'
 IP_GW='$(sq "$IP_GW")'
 DNS_SERVERS='$(sq "$DNS_SERVERS")'
 HIDDEN='$(sq "$HIDDEN")'
+CONTAINER='$(sq "$CONTAINER")'
 EOF
+}
+
+# --- Droidspaces helpers (managed mode) ---
+
+# Run a command inside the target container. droidspaces passes argv straight to
+# execvp (see run_in_rootfs), so quote exactly as for a local command.
+ds_run() { "$DROIDSPACES" -n "$CONTAINER" run "$@"; }
+
+# PID of a running container by name, empty if not running.
+ds_container_pid() {
+    "$DROIDSPACES" show --format 2>/dev/null \
+        | sed -n "s/^CONT_$1=//p" | head -n1
+}
+
+# True if the container's /etc/os-release identifies it as OpenWrt.
+# OpenWrt writes ID="openwrt" (quoted), so tolerate optional ' or " quoting.
+ds_is_openwrt() {
+    ds_run cat /etc/os-release 2>/dev/null | grep -qiE "^ID=['\"]?openwrt"
 }
 
 # --- Upstream resolution ---
@@ -333,7 +373,8 @@ teardown() {
 
 # --- Setup ---
 
-config_network() {
+# Create the ap0 virtual interface on the physical Wi-Fi chip (both modes).
+create_ap_iface() {
     log "Creating virtual AP interface '$AP_IFACE' on $PHY_IFACE..."
 
     run_in_chroot "iw dev $AP_IFACE del" 2>/dev/null || true
@@ -344,6 +385,11 @@ config_network() {
     fi
     run_in_chroot "iw dev $AP_IFACE info" >/dev/null 2>&1 || {
         error "$AP_IFACE was not created successfully"; return 1; }
+    return 0
+}
+
+config_network() {
+    create_ap_iface || return 1
 
     log "Configuring gateway address $IP_GW..."
     "$IP" link set "$AP_IFACE" down 2>/dev/null
@@ -402,10 +448,10 @@ EOF
     return 0
 }
 
-start_services() {
-    log "Generating service configs (band ${BAND}GHz, channel $CHANNEL)..."
-
-    local country hw_mode extra
+# Generate /run/hostapd.conf. $1 = optional bridge name: when set, hostapd
+# enslaves ap0 to that bridge itself (managed mode) and we run no dnsmasq/L3.
+write_hostapd_conf() {
+    local hb="$1" country hw_mode extra
     country=$(reg_country)
     if [ "$BAND" = "5" ]; then
         hw_mode="a"
@@ -420,6 +466,7 @@ ieee80211ac=1"
 interface=$AP_IFACE
 driver=nl80211
 ctrl_interface=/run/hostapd
+${hb:+bridge=$hb}
 ssid=$SSID
 hw_mode=$hw_mode
 channel=$CHANNEL
@@ -432,6 +479,25 @@ wpa_key_mgmt=WPA-PSK
 rsn_pairwise=CCMP
 ignore_broadcast_ssid=$HIDDEN
 EOF
+}
+
+start_hostapd() {
+    log "Starting hostapd..."
+    if ! run_in_chroot "hostapd -B -P /run/hostapd.pid /run/hostapd.conf"; then
+        error "hostapd failed to start (check band/channel - try band 2)."
+        return 1
+    fi
+    sleep 2
+    run_in_chroot "[ -f /run/hostapd.pid ] && kill -0 \$(cat /run/hostapd.pid)" 2>/dev/null || {
+        error "hostapd is not running after start"; return 1; }
+    log "hostapd running (PID $(run_in_chroot 'cat /run/hostapd.pid' 2>/dev/null))"
+    return 0
+}
+
+start_services() {
+    log "Generating service configs (band ${BAND}GHz, channel $CHANNEL)..."
+
+    write_hostapd_conf ""
 
     local dns_config=""
     if [ -n "$DNS_SERVERS" ]; then
@@ -466,15 +532,7 @@ pid-file=/run/dnsmasq.pid
 user=root
 EOF
 
-    log "Starting hostapd..."
-    if ! run_in_chroot "hostapd -B -P /run/hostapd.pid /run/hostapd.conf"; then
-        error "hostapd failed to start (check band/channel - try band 2)."
-        return 1
-    fi
-    sleep 2
-    run_in_chroot "[ -f /run/hostapd.pid ] && kill -0 \$(cat /run/hostapd.pid)" 2>/dev/null || {
-        error "hostapd is not running after start"; return 1; }
-    log "hostapd running (PID $(run_in_chroot 'cat /run/hostapd.pid' 2>/dev/null))"
+    start_hostapd || return 1
 
     log "Starting dnsmasq..."
     if ! run_in_chroot "dnsmasq -C /run/dnsmasq.conf"; then
@@ -487,6 +545,161 @@ EOF
     log "dnsmasq running (PID $(run_in_chroot 'cat /run/dnsmasq.pid' 2>/dev/null))"
 
     return 0
+}
+
+# --- Managed mode (Droidspaces container integration) ---
+#
+# ap0 becomes a dumb bridged port on VAP_BRIDGE; one veth peer is handed to the
+# chosen container as VAP_PORT. The container owns DHCP/DNS/NAT/firewall. We do
+# the proven thing from the PoC: NO bridge= in hostapd.conf, instead enslave ap0
+# to the bridge manually after hostapd is up (and retry through Android's
+# intermittent netlink EPERM).
+
+# Bring a freshly-created link up, retrying past the transient EPERM.
+ip_up_retry() {
+    local i=0
+    while [ $i -lt 6 ]; do
+        "$IP" link set "$1" up 2>/dev/null && return 0
+        i=$((i + 1)); sleep 0.3
+    done
+    "$IP" link set "$1" up   # final try, surface the error
+}
+
+# OpenWrt auto-provisioning: a LAN on VAP_PORT with its own DHCP + NAT out WAN.
+provision_openwrt() {
+    log "Provisioning OpenWrt LAN ($VAP_LAN_GW) on $VAP_PORT..."
+
+    ds_run uci set network.vaplan=interface
+    ds_run uci set network.vaplan.device="$VAP_PORT"
+    ds_run uci set network.vaplan.proto=static
+    ds_run uci set network.vaplan.ipaddr="$VAP_LAN_GW"
+    ds_run uci set network.vaplan.netmask=255.255.255.0
+    ds_run uci commit network
+
+    ds_run uci set dhcp.vaplan=dhcp
+    ds_run uci set dhcp.vaplan.interface=vaplan
+    ds_run uci set dhcp.vaplan.start=100
+    ds_run uci set dhcp.vaplan.limit=150
+    ds_run uci set dhcp.vaplan.leasetime=12h
+    ds_run uci commit dhcp
+
+    ds_run /etc/init.d/network reload >/dev/null 2>&1
+    ds_run /etc/init.d/dnsmasq restart >/dev/null 2>&1
+
+    # Forwarding + NAT. Many Android kernels lack nf_tables (OpenWrt's fw4 can't
+    # load), but do have x_tables - so prefer iptables-legacy. Detect + warn,
+    # never auto-install.
+    ds_run sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1
+
+    if ds_run iptables-legacy --version >/dev/null 2>&1; then
+        ds_run iptables-legacy -t nat -D POSTROUTING -s "$VAP_LAN_NET" ! -d "$VAP_LAN_NET" -j MASQUERADE 2>/dev/null
+        if ds_run iptables-legacy -t nat -A POSTROUTING -s "$VAP_LAN_NET" ! -d "$VAP_LAN_NET" -j MASQUERADE; then
+            log "OpenWrt NAT installed (iptables-legacy MASQUERADE)."
+        else
+            warn "OpenWrt: failed to add iptables-legacy MASQUERADE rule."
+        fi
+    elif ds_run nft list ruleset >/dev/null 2>&1; then
+        ds_run /etc/init.d/firewall reload >/dev/null 2>&1 || true
+        warn "OpenWrt is using nftables/fw4 - make sure '$VAP_PORT' sits in a masqueraded firewall zone."
+    else
+        warn "OpenWrt has no iptables-legacy and no working nftables."
+        warn "Clients will get an IP but NO internet. Inside the container, run:"
+        warn "    opkg update && opkg install iptables-zz-legacy"
+    fi
+    return 0
+}
+
+# Wire ap0 -> VAP_BRIDGE -> veth -> container. No L3 on our side.
+config_network_bridged() {
+    local pid
+    pid=$(ds_container_pid "$CONTAINER")
+    [ -z "$pid" ] && { error "Container '$CONTAINER' is not running."; return 1; }
+    log "Managed mode: wiring $AP_IFACE to container '$CONTAINER' (PID $pid) via $VAP_BRIDGE."
+
+    create_ap_iface || return 1
+
+    # Clean any stale host-side bridge/veth from a previous run (busybox: the
+    # Android /system/bin/ip throws EPERM on bridge deletes).
+    "$BUSYBOX" ip link del "$VAP_VETH_HOST" 2>/dev/null || true
+    "$BUSYBOX" ip link del "$VAP_BRIDGE" 2>/dev/null || true
+
+    # Neutral host bridge (no IP - the container owns all L3).
+    "$IP" link add name "$VAP_BRIDGE" type bridge || { error "Failed to create $VAP_BRIDGE"; return 1; }
+    ip_up_retry "$VAP_BRIDGE"
+
+    # veth: host side joins the bridge, peer crosses into the container.
+    "$IP" link add "$VAP_VETH_HOST" type veth peer name "$VAP_VETH_PEER" \
+        || { error "Failed to create veth pair"; return 1; }
+    "$IP" link set "$VAP_VETH_HOST" master "$VAP_BRIDGE" \
+        || { error "Failed to enslave $VAP_VETH_HOST to $VAP_BRIDGE"; return 1; }
+    ip_up_retry "$VAP_VETH_HOST"
+
+    "$IP" link set "$VAP_VETH_PEER" netns "$pid" \
+        || { error "Failed to move veth into container netns"; return 1; }
+    ds_run ip link set "$VAP_VETH_PEER" name "$VAP_PORT" \
+        || { error "Failed to rename veth to $VAP_PORT inside container"; return 1; }
+    ds_run ip link set "$VAP_PORT" up || warn "Could not bring up $VAP_PORT inside container."
+
+    # The container owns L3. Auto-provision OpenWrt; otherwise hand it over.
+    if ds_is_openwrt; then
+        provision_openwrt || warn "OpenWrt provisioning hit issues - check the container."
+    else
+        log "Container is not OpenWrt - delivered $VAP_PORT. The container must"
+        log "configure it (assign an IP, run DHCP + NAT) on its own."
+    fi
+
+    cat > "$STATE_FILE" <<EOF
+mode=bridged
+container=$CONTAINER
+bridge=$VAP_BRIDGE
+band=$BAND
+channel=$CHANNEL
+ssid=$SSID
+gateway=$VAP_LAN_GW
+started=$(date '+%Y-%m-%d %H:%M:%S')
+EOF
+
+    log "Managed network wiring completed."
+    return 0
+}
+
+start_services_bridged() {
+    log "Starting hostapd (managed/bridged mode)..."
+    write_hostapd_conf ""          # no bridge= - we enslave ap0 ourselves below
+    start_hostapd || return 1
+
+    # Enslave ap0 AFTER hostapd is up (proven order from the PoC), retrying past
+    # the transient EPERM.
+    local i=0
+    while [ $i -lt 6 ]; do
+        "$IP" link set "$AP_IFACE" master "$VAP_BRIDGE" 2>/dev/null && break
+        i=$((i + 1)); sleep 0.3
+    done
+    if ! "$IP" -o link show "$AP_IFACE" 2>/dev/null | grep -q "master $VAP_BRIDGE"; then
+        error "Failed to enslave $AP_IFACE to $VAP_BRIDGE."
+        return 1
+    fi
+    log "$AP_IFACE bridged into $VAP_BRIDGE - clients now live on the container's LAN."
+    return 0
+}
+
+teardown_bridged() {
+    log "Tearing down managed (bridged) AP..."
+
+    # Stop hostapd (releases ap0 from the bridge), then delete ap0.
+    run_in_chroot "[ -f /run/hostapd.pid ] && kill \$(cat /run/hostapd.pid) 2>/dev/null; \
+                   rm -f /run/hostapd.pid /run/hostapd.conf" 2>/dev/null || true
+    run_in_chroot "iw dev $AP_IFACE del" 2>/dev/null || "$IP" link del "$AP_IFACE" 2>/dev/null || true
+
+    # Delete the host bridge + veth (busybox - /system/bin/ip EPERMs on these).
+    # Removing the host veth also removes VAP_PORT inside the container.
+    "$BUSYBOX" ip link del "$VAP_VETH_HOST" 2>/dev/null || true
+    "$BUSYBOX" ip link del "$VAP_BRIDGE" 2>/dev/null || true
+
+    # The container's own LAN config (uci) is left intact - stopping the
+    # container is a separate, user-driven action.
+    rm -f "$STATE_FILE"
+    log "Managed AP stopped (container '$CONTAINER' left running)."
 }
 
 # --- Subcommands ---
@@ -524,36 +737,50 @@ cmd_start() {
     # before anything can fail - a failed attempt must not lose the config.
     save_conf
 
-    # Restart semantics: tear down any previous AP, then recycle the chroot.
-    # The namespace holder is the PID-ns init but never reaps reparented
-    # children (busybox sleep has no wait loop), so dead hostapd/dnsmasq pile
-    # up as zombies under it - a fresh namespace per AP session keeps the
-    # process table clean.
-    [ -f "$STATE_FILE" ] && { log "Existing AP state found - restarting..."; teardown; }
+    # Restart semantics: tear down any previous AP (either mode), then recycle
+    # the chroot. The namespace holder is the PID-ns init but never reaps
+    # reparented children (busybox sleep has no wait loop), so dead
+    # hostapd/dnsmasq pile up as zombies under it - a fresh namespace per AP
+    # session keeps the process table clean.
+    if [ -f "$STATE_FILE" ]; then
+        log "Existing AP state found - restarting..."
+        if grep -q '^mode=bridged' "$STATE_FILE"; then teardown_bridged; else teardown; fi
+    fi
     sh "$VAP_SH" stop -s >/dev/null 2>&1
     sh "$VAP_SH" start -s || { error "Failed to start chroot environment"; exit 1; }
 
     check_prerequisites || exit 1
 
-    resolve_upstream || exit 1
-    pick_channel
+    if [ -n "$CONTAINER" ]; then
+        # --- Managed mode: a Droidspaces container owns the LAN ---
+        if [ -z "$(ds_container_pid "$CONTAINER")" ]; then
+            error "Container '$CONTAINER' is not running - start it first."
+            full_stop_bridged; exit 1
+        fi
+        pick_channel
+        trap 'full_stop_bridged; exit 1' INT TERM
 
-    trap 'full_stop; exit 1' INT TERM
+        if ! config_network_bridged; then full_stop_bridged; exit 1; fi
+        if ! start_services_bridged; then full_stop_bridged; exit 1; fi
 
-    if ! config_network; then
-        full_stop
-        exit 1
+        log "VirtualAP is ACTIVE (managed by container '$CONTAINER')!"
+        log "  SSID     : $SSID (${BAND}GHz, channel $CHANNEL)"
+        log "  Upstream : container '$CONTAINER' via $VAP_BRIDGE -> $VAP_PORT"
+        log "  LAN      : served by the container ($VAP_LAN_GW)"
+    else
+        # --- Routed mode: classic VirtualAP L3 ---
+        resolve_upstream || exit 1
+        pick_channel
+        trap 'full_stop; exit 1' INT TERM
+
+        if ! config_network; then full_stop; exit 1; fi
+        if ! start_services; then full_stop; exit 1; fi
+
+        log "VirtualAP is ACTIVE!"
+        log "  SSID    : $SSID (${BAND}GHz, channel $CHANNEL)"
+        log "  Gateway : $IP_GW (static - never changes)"
+        log "  Upstream: ${UPSTREAM_IFACE_RESOLVED:-$UPSTREAM} (table $UPSTREAM_TABLE)"
     fi
-
-    if ! start_services; then
-        full_stop
-        exit 1
-    fi
-
-    log "VirtualAP is ACTIVE!"
-    log "  SSID    : $SSID (${BAND}GHz, channel $CHANNEL)"
-    log "  Gateway : $IP_GW (static - never changes)"
-    log "  Upstream: ${UPSTREAM_IFACE_RESOLVED:-$UPSTREAM} (table $UPSTREAM_TABLE)"
 }
 
 # Full teardown: AP rules/services first, then the whole chroot. The chroot
@@ -566,27 +793,45 @@ full_stop() {
     log "Chroot environment stopped."
 }
 
+full_stop_bridged() {
+    teardown_bridged
+    sh "$VAP_SH" stop -s >/dev/null 2>&1
+    log "Chroot environment stopped."
+}
+
 cmd_stop() {
-    full_stop
+    if grep -q '^mode=bridged' "$STATE_FILE" 2>/dev/null; then
+        full_stop_bridged
+    else
+        full_stop
+    fi
 }
 
 cmd_status() {
-    local running=0 hostapd_state="dead" dnsmasq_state="dead" clients=0
+    local running=0 hostapd_state="dead" dnsmasq_state="dead" clients=0 mode="routed"
+    [ -f "$STATE_FILE" ] && grep -q '^mode=bridged' "$STATE_FILE" && mode="bridged"
 
     if [ -f "$STATE_FILE" ]; then
         run_in_chroot "[ -f /run/hostapd.pid ] && kill -0 \$(cat /run/hostapd.pid)" 2>/dev/null && hostapd_state="running"
-        run_in_chroot "[ -f /run/dnsmasq.pid ] && kill -0 \$(cat /run/dnsmasq.pid)" 2>/dev/null && dnsmasq_state="running"
+        if [ "$mode" = "bridged" ]; then
+            dnsmasq_state="container"   # DHCP/DNS served by the container, not us
+        else
+            run_in_chroot "[ -f /run/dnsmasq.pid ] && kill -0 \$(cat /run/dnsmasq.pid)" 2>/dev/null && dnsmasq_state="running"
+        fi
         [ "$hostapd_state" = "running" ] && running=1
         clients=$(run_in_chroot "iw dev $AP_IFACE station dump" 2>/dev/null | grep -c '^Station')
     fi
 
     echo "running=$running"
+    echo "mode=$mode"
     echo "hostapd=$hostapd_state"
     echo "dnsmasq=$dnsmasq_state"
-    echo "gateway=$IP_GW"
     echo "clients=$clients"
+    # gateway/ssid/etc. come from the state file (routed: IP_GW; bridged: VAP_LAN_GW)
     if [ -f "$STATE_FILE" ]; then
-        grep -E '^(ssid|band|channel|upstream|upstream_table|upstream_iface|gateway|dns_servers|started)=' "$STATE_FILE"
+        grep -E '^(ssid|band|channel|upstream|upstream_table|upstream_iface|gateway|dns_servers|container|started)=' "$STATE_FILE"
+    else
+        echo "gateway=$IP_GW"
     fi
 }
 
@@ -609,6 +854,16 @@ cmd_interfaces() {
     done
 }
 
+cmd_containers() {
+    # Running Droidspaces containers, one name per line. Empty output means
+    # either Droidspaces isn't installed or nothing is running - the app uses
+    # this to decide whether to show the container-integration UI at all.
+    [ -x "/data/local/Droidspaces/bin/droidspaces" ] \
+        || command -v droidspaces >/dev/null 2>&1 || return 0
+    "$DROIDSPACES" show --format 2>/dev/null \
+        | sed -n 's/^CONT_\(.*\)=[0-9][0-9]*$/\1/p'
+}
+
 # --- Main ---
 
 if [ "$(id -u)" -ne 0 ]; then
@@ -628,6 +883,8 @@ print_usage() {
     echo "  -d <dns>       Comma-separated list of upstream DNS servers"
     echo "  -w <iface>     Physical WiFi interface (default: wlan0)"
     echo "  -H <0|1>       Hide SSID (0 = visible [default], 1 = hidden)"
+    echo "  -K <container> Managed mode: hand the AP's LAN to a Droidspaces"
+    echo "                 container (it owns DHCP/DNS/NAT). Disables -o/-g/-d."
     echo ""
     echo "Saved settings in $CONF_FILE are reused when flags are omitted."
 }
@@ -638,7 +895,7 @@ COMMAND="$1"
 # Saved config provides defaults; CLI flags override
 load_conf
 
-while getopts "s:p:o:b:c:w:g:d:H:h" opt 2>/dev/null; do
+while getopts "s:p:o:b:c:w:g:d:H:K:h" opt 2>/dev/null; do
     case $opt in
         s) SSID="$OPTARG" ;;
         p) PASSWORD="$OPTARG" ;;
@@ -649,6 +906,7 @@ while getopts "s:p:o:b:c:w:g:d:H:h" opt 2>/dev/null; do
         g) IP_GW="$OPTARG" ;;
         d) DNS_SERVERS="$OPTARG" ;;
         H) HIDDEN="$OPTARG" ;;
+        K) CONTAINER="$OPTARG" ;;
         h) print_usage; exit 0 ;;
         *) print_usage; exit 1 ;;
     esac
@@ -665,6 +923,7 @@ case "$COMMAND" in
     status)     cmd_status ;;
     leases)     cmd_leases ;;
     interfaces) cmd_interfaces ;;
+    containers) cmd_containers ;;
     -h|--help|help|"") print_usage; exit 0 ;;
     *) error "Unknown command: $COMMAND"; print_usage; exit 1 ;;
 esac

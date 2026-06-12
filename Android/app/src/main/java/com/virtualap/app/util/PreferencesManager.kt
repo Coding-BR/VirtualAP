@@ -87,6 +87,14 @@ class PreferencesManager private constructor(context: Context) {
         get() = prefs.getBoolean(Constants.KEY_AP_HIDDEN, false)
         set(value) { prefs.edit().putBoolean(Constants.KEY_AP_HIDDEN, value).apply() }
 
+    var apContainerMode: Boolean
+        get() = prefs.getBoolean(Constants.KEY_AP_CONTAINER_MODE, false)
+        set(value) { prefs.edit().putBoolean(Constants.KEY_AP_CONTAINER_MODE, value).apply() }
+
+    var apContainer: String
+        get() = prefs.getString(Constants.KEY_AP_CONTAINER, "") ?: ""
+        set(value) { prefs.edit().putString(Constants.KEY_AP_CONTAINER, value).apply() }
+
     var hasSeenRootCheck: Boolean
         get() = prefs.getBoolean(Constants.KEY_HAS_SEEN_ROOT_CHECK, false)
         set(value) { prefs.edit().putBoolean(Constants.KEY_HAS_SEEN_ROOT_CHECK, value).apply() }

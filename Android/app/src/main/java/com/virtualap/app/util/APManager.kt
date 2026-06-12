@@ -18,7 +18,9 @@ data class APStatus(
     val upstream: String? = null,
     val upstreamIface: String? = null,
     val upstreamTable: String? = null,
-    val started: String? = null
+    val started: String? = null,
+    val mode: String = "routed",        // "routed" or "bridged" (container-managed)
+    val container: String? = null       // target container name when bridged
 )
 
 data class NetworkIface(val name: String, val ip: String?)
@@ -50,21 +52,25 @@ object APManager {
             upstream = kv["upstream"],
             upstreamIface = kv["upstream_iface"],
             upstreamTable = kv["upstream_table"],
-            started = kv["started"]
+            started = kv["started"],
+            mode = kv["mode"] ?: "routed",
+            container = kv["container"]
         )
     }
 
     suspend fun start(
         ssid: String, password: String, upstream: String,
         band: String, channel: String?, gateway: String, dnsServers: String?,
-        hidden: Boolean = false,
+        hidden: Boolean = false, container: String = "",
         onLine: (Int, String) -> Unit
     ): Boolean = withContext(Dispatchers.IO) {
         val sq = { s: String -> "'" + s.replace("'", "'\\''") + "'" }
         val channelVal = channel ?: ""
         val dnsVal = dnsServers ?: ""
         val hiddenVal = if (hidden) "1" else "0"
-        val cmd = "${Backend.startAp} start -s ${sq(ssid)} -p ${sq(password)} -o ${sq(upstream)} -b ${sq(band)} -c ${sq(channelVal)} -g ${sq(gateway)} -d ${sq(dnsVal)} -H $hiddenVal"
+        // -K is always passed (empty clears managed mode) so a stale CONTAINER
+        // in ap.conf never silently re-enables it.
+        val cmd = "${Backend.startAp} start -s ${sq(ssid)} -p ${sq(password)} -o ${sq(upstream)} -b ${sq(band)} -c ${sq(channelVal)} -g ${sq(gateway)} -d ${sq(dnsVal)} -H $hiddenVal -K ${sq(container)}"
 
         val outputList = object : com.topjohnwu.superuser.CallbackList<String>() {
             override fun onAddElement(e: String?) {
@@ -88,6 +94,17 @@ object APManager {
         Shell.cmd("${Backend.startAp} stop").to(outputList).exec().isSuccess
     }
 
+
+    /**
+     * Running Droidspaces containers (names). Empty when Droidspaces isn't
+     * installed or nothing is running — the UI uses this to decide whether to
+     * show the container-integration option at all.
+     */
+    suspend fun getContainers(): List<String> = withContext(Dispatchers.IO) {
+        val result = Shell.cmd("${Backend.startAp} containers 2>/dev/null").exec()
+        if (!result.isSuccess) return@withContext emptyList()
+        result.out.map { it.trim() }.filter { it.isNotEmpty() }
+    }
 
     suspend fun getInterfaces(): List<NetworkIface> = withContext(Dispatchers.IO) {
         val result = Shell.cmd("${Backend.startAp} interfaces 2>/dev/null").exec()

@@ -26,7 +26,9 @@ data class APConfig(
     val upstream: String = "auto",
     val gateway: String = "192.168.42.1",
     val dnsServers: String = "",
-    val hidden: Boolean = false
+    val hidden: Boolean = false,
+    val containerMode: Boolean = false,
+    val containerName: String = ""
 )
 
 class APViewModel(application: Application) : AndroidViewModel(application) {
@@ -43,10 +45,15 @@ class APViewModel(application: Application) : AndroidViewModel(application) {
             upstream = prefs.apUpstream,
             gateway = prefs.apGateway,
             dnsServers = prefs.apDnsServers,
-            hidden = prefs.apHidden
+            hidden = prefs.apHidden,
+            containerMode = prefs.apContainerMode,
+            containerName = prefs.apContainer
         )
     )
     var interfaces by mutableStateOf<List<NetworkIface>>(emptyList())
+        private set
+    /** Running Droidspaces containers; empty = hide the integration UI entirely. */
+    var containers by mutableStateOf<List<String>>(emptyList())
         private set
     var isStarting by mutableStateOf(false)
         private set
@@ -71,10 +78,29 @@ class APViewModel(application: Application) : AndroidViewModel(application) {
                 prefs.apGateway = cfg.gateway
                 prefs.apDnsServers = cfg.dnsServers
                 prefs.apHidden = cfg.hidden
+                prefs.apContainerMode = cfg.containerMode
+                prefs.apContainer = cfg.containerName
             }
         }
         startPolling()
         loadInterfaces()
+        loadContainers()
+    }
+
+    fun loadContainers() {
+        viewModelScope.launch {
+            val list = APManager.getContainers()
+            containers = list
+            // If the saved container vanished (stopped / Droidspaces gone), drop
+            // managed mode so we never send a stale -K to the backend.
+            val cfg = config
+            if (cfg.containerMode && (list.isEmpty() || cfg.containerName !in list)) {
+                config = cfg.copy(
+                    containerMode = list.isNotEmpty() && cfg.containerName in list,
+                    containerName = if (cfg.containerName in list) cfg.containerName else ""
+                )
+            }
+        }
     }
 
     private fun startPolling() {
@@ -117,6 +143,7 @@ class APViewModel(application: Application) : AndroidViewModel(application) {
     fun start() {
         val cfg = config
         if (cfg.ssid.isBlank() || cfg.password.length < 8) return
+        if (cfg.containerMode && cfg.containerName.isBlank()) return
         viewModelScope.launch {
             isStarting = true
             actionLogs.clear()
@@ -126,7 +153,8 @@ class APViewModel(application: Application) : AndroidViewModel(application) {
                 cfg.ssid, cfg.password, cfg.upstream, cfg.band,
                 cfg.channel.takeIf { it.isNotBlank() },
                 cfg.gateway, cfg.dnsServers.takeIf { it.isNotBlank() },
-                cfg.hidden
+                cfg.hidden,
+                if (cfg.containerMode) cfg.containerName else ""
             ) { level, msg ->
                 actionLogs.add(level to msg)
             }

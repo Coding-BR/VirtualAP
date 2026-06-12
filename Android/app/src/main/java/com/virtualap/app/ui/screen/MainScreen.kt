@@ -273,55 +273,113 @@ fun MainScreen(
                         }
                         Spacer(Modifier.height(8.dp))
 
-                        // Upstream dropdown with refresh button
-                        var upstreamExpanded by remember { mutableStateOf(false) }
-                        val upstreamAutoLabel = stringResource(R.string.upstream_auto)
-                        val upstreamOptions = listOf(upstreamAutoLabel to "auto") +
-                            vm.interfaces.filter { it.name != "ap0" }.map {
-                                val label = if (it.ip != null) "${it.name} (${it.ip})" else it.name
-                                label to it.name
-                            }
-                        val selectedUpstreamLabel = upstreamOptions.find { it.second == vm.config.upstream }?.first
-                            ?: upstreamAutoLabel
+                        // --- Upstream: a Droidspaces container (managed) OR a host interface ---
+                        val hasContainers = vm.containers.isNotEmpty()
 
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
+                        // Container-integration toggle — only when Droidspaces is
+                        // installed AND at least one container is running.
+                        if (hasContainers) {
+                            SwitchItem(
+                                label = stringResource(R.string.container_mode_label),
+                                subtitle = stringResource(R.string.container_mode_desc),
+                                icon = Icons.Default.Dns,
+                                checked = vm.config.containerMode,
+                                onCheckedChange = { on ->
+                                    vm.config = vm.config.copy(
+                                        containerMode = on,
+                                        containerName = if (on && vm.config.containerName.isBlank())
+                                            vm.containers.first() else vm.config.containerName
+                                    )
+                                },
+                                enabled = !status.running
+                            )
+                            Spacer(Modifier.height(8.dp))
+                        }
+
+                        if (vm.config.containerMode && hasContainers) {
+                            // Container picker (the container owns DHCP/NAT)
+                            var containerExpanded by remember { mutableStateOf(false) }
+                            val selectedContainer = vm.config.containerName.ifBlank { vm.containers.first() }
                             ExposedDropdownMenuBox(
-                                expanded = upstreamExpanded,
-                                onExpandedChange = { if (!status.running) upstreamExpanded = it },
-                                modifier = Modifier.weight(1f)
+                                expanded = containerExpanded,
+                                onExpandedChange = { if (!status.running) containerExpanded = it }
                             ) {
                                 OutlinedTextField(
-                                    value = selectedUpstreamLabel,
+                                    value = selectedContainer,
                                     onValueChange = {},
                                     readOnly = true,
-                                    label = { Text(stringResource(R.string.upstream_interface_label)) },
-                                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = upstreamExpanded) },
+                                    label = { Text(stringResource(R.string.container_label)) },
+                                    leadingIcon = { Icon(Icons.Default.Dns, contentDescription = null) },
+                                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = containerExpanded) },
                                     modifier = Modifier.fillMaxWidth().menuAnchor(),
                                     enabled = !status.running
                                 )
                                 ExposedDropdownMenu(
-                                    expanded = upstreamExpanded,
-                                    onDismissRequest = { upstreamExpanded = false }
+                                    expanded = containerExpanded,
+                                    onDismissRequest = { containerExpanded = false }
                                 ) {
-                                    upstreamOptions.forEach { (label, value) ->
+                                    vm.containers.forEach { name ->
                                         DropdownMenuItem(
-                                            text = { Text(label) },
+                                            text = { Text(name) },
                                             onClick = {
-                                                vm.config = vm.config.copy(upstream = value)
-                                                upstreamExpanded = false
+                                                vm.config = vm.config.copy(containerName = name)
+                                                containerExpanded = false
                                             }
                                         )
                                     }
                                 }
                             }
-                            IconButton(
-                                onClick = { vm.loadInterfaces() },
-                                enabled = !status.running
+                        } else {
+                            // Classic upstream interface dropdown + refresh
+                            var upstreamExpanded by remember { mutableStateOf(false) }
+                            val upstreamAutoLabel = stringResource(R.string.upstream_auto)
+                            val upstreamOptions = listOf(upstreamAutoLabel to "auto") +
+                                vm.interfaces.filter { it.name != "ap0" }.map {
+                                    val label = if (it.ip != null) "${it.name} (${it.ip})" else it.name
+                                    label to it.name
+                                }
+                            val selectedUpstreamLabel = upstreamOptions.find { it.second == vm.config.upstream }?.first
+                                ?: upstreamAutoLabel
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Icon(Icons.Default.Refresh, contentDescription = stringResource(R.string.refresh_interfaces_desc))
+                                ExposedDropdownMenuBox(
+                                    expanded = upstreamExpanded,
+                                    onExpandedChange = { if (!status.running) upstreamExpanded = it },
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    OutlinedTextField(
+                                        value = selectedUpstreamLabel,
+                                        onValueChange = {},
+                                        readOnly = true,
+                                        label = { Text(stringResource(R.string.upstream_interface_label)) },
+                                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = upstreamExpanded) },
+                                        modifier = Modifier.fillMaxWidth().menuAnchor(),
+                                        enabled = !status.running
+                                    )
+                                    ExposedDropdownMenu(
+                                        expanded = upstreamExpanded,
+                                        onDismissRequest = { upstreamExpanded = false }
+                                    ) {
+                                        upstreamOptions.forEach { (label, value) ->
+                                            DropdownMenuItem(
+                                                text = { Text(label) },
+                                                onClick = {
+                                                    vm.config = vm.config.copy(upstream = value)
+                                                    upstreamExpanded = false
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
+                                IconButton(
+                                    onClick = { vm.loadInterfaces() },
+                                    enabled = !status.running
+                                ) {
+                                    Icon(Icons.Default.Refresh, contentDescription = stringResource(R.string.refresh_interfaces_desc))
+                                }
                             }
                         }
                     }
@@ -342,6 +400,9 @@ fun MainScreen(
                         )
                         Spacer(Modifier.height(12.dp))
 
+                      // Gateway IP + DNS are VirtualAP's own L3 — irrelevant when
+                      // a container owns the LAN, so hide them in managed mode.
+                      if (!vm.config.containerMode) {
                         // Gateway IP
                         var gatewayText by remember(vm.config.gateway) { mutableStateOf(vm.config.gateway) }
                         val gatewayError = gatewayText.isNotBlank() && !isValidIpv4(gatewayText)
@@ -408,6 +469,8 @@ fun MainScreen(
                             ),
                             modifier = Modifier.fillMaxWidth()
                         )
+                        Spacer(Modifier.height(8.dp))
+                      } // end !containerMode (Gateway IP + DNS)
 
                         // Hide SSID
                         SwitchItem(
@@ -430,7 +493,7 @@ fun MainScreen(
                     Button(
                         onClick = { if (status.running) vm.stop() else vm.start() },
                         modifier = Modifier.fillMaxWidth().height(52.dp),
-                        enabled = !isLoading && (status.running || (vm.config.ssid.isNotBlank() && vm.config.password.length >= 8)),
+                        enabled = !isLoading && (status.running || (vm.config.ssid.isNotBlank() && vm.config.password.length >= 8 && (!vm.config.containerMode || vm.config.containerName.isNotBlank()))),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = if (status.running)
                                 MaterialTheme.colorScheme.error
@@ -621,16 +684,29 @@ private fun ActiveNetworkCard(vm: APViewModel) {
                     modifier = Modifier.weight(1f),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    DashboardStatRow(
-                        icon = Icons.Default.SwapVert,
-                        label = stringResource(R.string.upstream_label),
-                        value = status.upstream ?: stringResource(R.string.auto_label)
-                    )
-                    DashboardStatRow(
-                        icon = Icons.Default.SettingsEthernet,
-                        label = stringResource(R.string.interface_label),
-                        value = status.upstreamIface ?: "—"
-                    )
+                    if (status.mode == "bridged") {
+                        DashboardStatRow(
+                            icon = Icons.Default.Dns,
+                            label = stringResource(R.string.container_label),
+                            value = status.container ?: "—"
+                        )
+                        DashboardStatRow(
+                            icon = Icons.Default.SwapVert,
+                            label = stringResource(R.string.upstream_label),
+                            value = stringResource(R.string.managed_label)
+                        )
+                    } else {
+                        DashboardStatRow(
+                            icon = Icons.Default.SwapVert,
+                            label = stringResource(R.string.upstream_label),
+                            value = status.upstream ?: stringResource(R.string.auto_label)
+                        )
+                        DashboardStatRow(
+                            icon = Icons.Default.SettingsEthernet,
+                            label = stringResource(R.string.interface_label),
+                            value = status.upstreamIface ?: "—"
+                        )
+                    }
                 }
             }
         }
