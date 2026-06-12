@@ -769,7 +769,7 @@ private fun ActiveNetworkCard(vm: APViewModel) {
                 ) {
                     if (status.mode == "bridged") {
                         DashboardStatRow(
-                            icon = Icons.Default.Dns,
+                            icon = ImageVector.vectorResource(R.drawable.ic_droidspaces),
                             label = stringResource(R.string.container_label),
                             value = status.container ?: "—"
                         )
