@@ -50,6 +50,10 @@ CHANNEL=""
 WIDTH="auto"
 DNS_SERVERS=""
 HIDDEN="0"
+# Security: open | wpa2 | wpa2wpa3 | wpa3. PMF (ieee80211w) only applies to wpa2
+# (0/1); wpa2wpa3 forces 1 and wpa3 forces 2 per the standard.
+SECURITY="wpa2"
+PMF="0"
 
 # --- Droidspaces container integration (managed mode) ---
 # When CONTAINER is set: ap0 becomes a bridged port on VAP_BRIDGE, a veth peer
@@ -129,6 +133,8 @@ WIDTH='$(sq "$WIDTH")'
 IP_GW='$(sq "$IP_GW")'
 DNS_SERVERS='$(sq "$DNS_SERVERS")'
 HIDDEN='$(sq "$HIDDEN")'
+SECURITY='$(sq "$SECURITY")'
+PMF='$(sq "$PMF")'
 CONTAINER='$(sq "$CONTAINER")'
 EOF
 }
@@ -512,7 +518,7 @@ EOF
 # ap0 to that bridge itself (managed mode) and we run no dnsmasq/L3. Channel
 # width comes from EFFECTIVE_WIDTH (set by pick_width): 20|40|80.
 write_hostapd_conf() {
-    local hb="$1" country hw_mode extra seg0 dir
+    local hb="$1" country hw_mode extra seg0 dir sec
     country=$(reg_country)
     if [ "$BAND" = "5" ]; then
         hw_mode="a"
@@ -539,6 +545,38 @@ vht_oper_chwidth=0"
         extra="ieee80211n=1"
     fi
 
+    # Security block. open = no encryption (no wpa lines). PMF (ieee80211w):
+    # wpa2 honors $PMF (0/1); wpa2wpa3 transition needs 1 (capable); wpa3 needs 2
+    # (required). SAE (wpa3 / the wpa3 half of transition) requires hostapd built
+    # with CONFIG_SAE - see scripts/build-in-container.sh.
+    case "$SECURITY" in
+        open)
+            sec=""
+            ;;
+        wpa3)
+            sec="wpa=2
+wpa_passphrase=$PASSWORD
+wpa_key_mgmt=SAE
+rsn_pairwise=CCMP
+ieee80211w=2"
+            ;;
+        wpa2wpa3)
+            sec="wpa=2
+wpa_passphrase=$PASSWORD
+wpa_key_mgmt=WPA-PSK SAE
+rsn_pairwise=CCMP
+ieee80211w=1"
+            ;;
+        *)  # wpa2 (default)
+            sec="wpa=2
+wpa_passphrase=$PASSWORD
+wpa_key_mgmt=WPA-PSK
+rsn_pairwise=CCMP"
+            [ "$PMF" = "1" ] && sec="$sec
+ieee80211w=1"
+            ;;
+    esac
+
     $CAT > "$RUN_DIR/hostapd.conf" <<EOF
 interface=$AP_IFACE
 driver=nl80211
@@ -550,10 +588,7 @@ channel=$CHANNEL
 $extra
 country_code=US
 ieee80211d=1
-wpa=2
-wpa_passphrase=$PASSWORD
-wpa_key_mgmt=WPA-PSK
-rsn_pairwise=CCMP
+$sec
 ignore_broadcast_ssid=$HIDDEN
 EOF
 }
@@ -803,7 +838,8 @@ teardown_bridged() {
 
 cmd_start() {
     [ -z "$SSID" ] && { error "SSID not set (use -s or save a config first)"; exit 1; }
-    if [ "$($PRINTF %s "$PASSWORD" | $WC -c)" -lt 8 ]; then
+    # Open networks carry no passphrase; every WPA mode needs >= 8 chars.
+    if [ "$SECURITY" != "open" ] && [ "$($PRINTF %s "$PASSWORD" | $WC -c)" -lt 8 ]; then
         error "Password must be at least 8 characters."; exit 1
     fi
 
@@ -921,6 +957,13 @@ cmd_status() {
         elif $GREP -q '^ht_capab=\[HT40'    "$RUN_DIR/hostapd.conf"; then $ECHO "width=40"
         else $ECHO "width=20"; fi
     fi
+    # Active security mode, derived from the live conf's key-mgmt line.
+    if [ "$running" = "1" ] && [ -f "$RUN_DIR/hostapd.conf" ]; then
+        if   ! $GREP -q '^wpa=' "$RUN_DIR/hostapd.conf"; then $ECHO "security=open"
+        elif $GREP -q '^wpa_key_mgmt=WPA-PSK SAE' "$RUN_DIR/hostapd.conf"; then $ECHO "security=wpa2wpa3"
+        elif $GREP -q '^wpa_key_mgmt=SAE'         "$RUN_DIR/hostapd.conf"; then $ECHO "security=wpa3"
+        else $ECHO "security=wpa2"; fi
+    fi
     # gateway/ssid/etc. come from the state file (routed: IP_GW; bridged: VAP_LAN_GW)
     if [ -f "$STATE_FILE" ]; then
         $GREP -E '^(ssid|band|channel|upstream|upstream_table|upstream_iface|gateway|dns_servers|container|started)=' "$STATE_FILE"
@@ -987,6 +1030,9 @@ print_usage() {
     $ECHO "  -d <dns>       Comma-separated list of upstream DNS servers"
     $ECHO "  -w <iface>     Physical WiFi interface (default: wlan0)"
     $ECHO "  -H <0|1>       Hide SSID (0 = visible [default], 1 = hidden)"
+    $ECHO "  -A <mode>      Security: open, wpa2 (default), wpa2wpa3, wpa3"
+    $ECHO "  -M <0|1>       Protected Management Frames for wpa2 (0=off [default],"
+    $ECHO "                 1=on); forced on for wpa2wpa3, required for wpa3"
     $ECHO "  -K <container> Managed mode: hand the AP's LAN to a Droidspaces"
     $ECHO "                 container (it owns DHCP/DNS/NAT). Disables -o/-g/-d."
     $ECHO ""
@@ -999,7 +1045,7 @@ COMMAND="$1"
 # Saved config provides defaults; CLI flags override
 load_conf
 
-while getopts "s:p:o:b:c:W:w:g:d:H:K:h" opt 2>/dev/null; do
+while getopts "s:p:o:b:c:W:w:g:d:H:A:M:K:h" opt 2>/dev/null; do
     case $opt in
         s) SSID="$OPTARG" ;;
         p) PASSWORD="$OPTARG" ;;
@@ -1011,6 +1057,8 @@ while getopts "s:p:o:b:c:W:w:g:d:H:K:h" opt 2>/dev/null; do
         g) IP_GW="$OPTARG" ;;
         d) DNS_SERVERS="$OPTARG" ;;
         H) HIDDEN="$OPTARG" ;;
+        A) SECURITY="$OPTARG" ;;
+        M) PMF="$OPTARG" ;;
         K) CONTAINER="$OPTARG" ;;
         h) print_usage; exit 0 ;;
         *) print_usage; exit 1 ;;

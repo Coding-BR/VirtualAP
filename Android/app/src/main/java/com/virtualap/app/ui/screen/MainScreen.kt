@@ -220,26 +220,68 @@ fun MainScreen(
                         )
                         Spacer(Modifier.height(8.dp))
 
-                        // Password
-                        OutlinedTextField(
-                            value = vm.config.password,
-                            onValueChange = { vm.config = vm.config.copy(password = it) },
-                            label = { Text(stringResource(R.string.password_label)) },
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true,
-                            visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                            trailingIcon = {
-                                IconButton(onClick = { passwordVisible = !passwordVisible }) {
-                                    Icon(
-                                        if (passwordVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                                        contentDescription = if (passwordVisible) stringResource(R.string.hide_password_desc) else stringResource(R.string.show_password_desc)
+                        // Security dropdown (Open / WPA2 / WPA2-WPA3 / WPA3)
+                        var securityExpanded by remember { mutableStateOf(false) }
+                        val securityOptions = listOf(
+                            "Open" to "open",
+                            "WPA2-Personal" to "wpa2",
+                            "WPA2/WPA3-Personal" to "wpa2wpa3",
+                            "WPA3-Personal" to "wpa3"
+                        )
+                        val selectedSecurityLabel = securityOptions.find { it.second == vm.config.security }?.first ?: "WPA2-Personal"
+
+                        ExposedDropdownMenuBox(
+                            expanded = securityExpanded,
+                            onExpandedChange = { if (!status.running) securityExpanded = it }
+                        ) {
+                            OutlinedTextField(
+                                value = selectedSecurityLabel,
+                                onValueChange = {},
+                                readOnly = true,
+                                label = { Text(stringResource(R.string.security_label)) },
+                                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = securityExpanded) },
+                                modifier = Modifier.fillMaxWidth().menuAnchor(),
+                                enabled = !status.running
+                            )
+                            ExposedDropdownMenu(
+                                expanded = securityExpanded,
+                                onDismissRequest = { securityExpanded = false }
+                            ) {
+                                securityOptions.forEach { (label, value) ->
+                                    DropdownMenuItem(
+                                        text = { Text(label) },
+                                        onClick = {
+                                            vm.selectSecurity(value)
+                                            securityExpanded = false
+                                        }
                                     )
                                 }
-                            },
-                            enabled = !status.running
-                        )
+                            }
+                        }
                         Spacer(Modifier.height(8.dp))
+
+                        // Password — open networks have none, so hide the field there.
+                        if (vm.passwordRequired()) {
+                            OutlinedTextField(
+                                value = vm.config.password,
+                                onValueChange = { vm.config = vm.config.copy(password = it) },
+                                label = { Text(stringResource(R.string.password_label)) },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true,
+                                visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                                trailingIcon = {
+                                    IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                                        Icon(
+                                            if (passwordVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                            contentDescription = if (passwordVisible) stringResource(R.string.hide_password_desc) else stringResource(R.string.show_password_desc)
+                                        )
+                                    }
+                                },
+                                enabled = !status.running
+                            )
+                            Spacer(Modifier.height(8.dp))
+                        }
 
                         // Band dropdown
                         var bandExpanded by remember { mutableStateOf(false) }
@@ -599,6 +641,21 @@ fun MainScreen(
                             onCheckedChange = { vm.config = vm.config.copy(hidden = it) },
                             enabled = !status.running
                         )
+
+                        // Protected Management Frames — only a real choice in WPA2.
+                        // WPA2/WPA3 and WPA3 set it automatically per the standard,
+                        // so the toggle is hidden for those modes.
+                        if (vm.config.security == "wpa2") {
+                            Spacer(Modifier.height(8.dp))
+                            SwitchItem(
+                                label = stringResource(R.string.pmf_label),
+                                subtitle = stringResource(R.string.pmf_desc),
+                                icon = Icons.Default.Security,
+                                checked = vm.config.pmf,
+                                onCheckedChange = { vm.setPmf(it) },
+                                enabled = !status.running
+                            )
+                        }
                     }
                 }
             }
@@ -611,7 +668,7 @@ fun MainScreen(
                     Button(
                         onClick = { if (status.running) vm.stop() else vm.start() },
                         modifier = Modifier.fillMaxWidth().height(52.dp),
-                        enabled = !isLoading && (status.running || (vm.config.ssid.isNotBlank() && vm.config.password.length >= 8 && (!vm.config.containerMode || vm.config.containerName.isNotBlank()))),
+                        enabled = !isLoading && (status.running || (vm.config.ssid.isNotBlank() && (!vm.passwordRequired() || vm.config.password.length >= 8) && (!vm.config.containerMode || vm.config.containerName.isNotBlank()))),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = if (status.running)
                                 MaterialTheme.colorScheme.error

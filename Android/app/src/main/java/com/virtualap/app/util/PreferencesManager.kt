@@ -91,6 +91,16 @@ class PreferencesManager private constructor(context: Context) {
         get() = prefs.getBoolean(Constants.KEY_AP_HIDDEN, false)
         set(value) { prefs.edit().putBoolean(Constants.KEY_AP_HIDDEN, value).apply() }
 
+    // Security mode: open | wpa2 | wpa2wpa3 | wpa3.
+    var apSecurity: String
+        get() = prefs.getString(Constants.KEY_AP_SECURITY, "wpa2") ?: "wpa2"
+        set(value) { prefs.edit().putString(Constants.KEY_AP_SECURITY, value).apply() }
+
+    // Protected Management Frames; only meaningful in wpa2 mode.
+    var apPmf: Boolean
+        get() = prefs.getBoolean(Constants.KEY_AP_PMF, false)
+        set(value) { prefs.edit().putBoolean(Constants.KEY_AP_PMF, value).apply() }
+
     var apContainerMode: Boolean
         get() = prefs.getBoolean(Constants.KEY_AP_CONTAINER_MODE, false)
         set(value) { prefs.edit().putBoolean(Constants.KEY_AP_CONTAINER_MODE, value).apply() }

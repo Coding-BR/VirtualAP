@@ -30,6 +30,8 @@ data class APConfig(
     val gateway: String = "192.168.42.1",
     val dnsServers: String = "",
     val hidden: Boolean = false,
+    val security: String = "wpa2",   // open | wpa2 | wpa2wpa3 | wpa3
+    val pmf: Boolean = false,        // Protected Management Frames (wpa2 only)
     val containerMode: Boolean = false,
     val containerName: String = ""
 )
@@ -50,6 +52,8 @@ class APViewModel(application: Application) : AndroidViewModel(application) {
             gateway = prefs.apGateway,
             dnsServers = prefs.apDnsServers,
             hidden = prefs.apHidden,
+            security = prefs.apSecurity,
+            pmf = prefs.apPmf,
             containerMode = prefs.apContainerMode,
             containerName = prefs.apContainer
         )
@@ -87,6 +91,8 @@ class APViewModel(application: Application) : AndroidViewModel(application) {
                 prefs.apGateway = cfg.gateway
                 prefs.apDnsServers = cfg.dnsServers
                 prefs.apHidden = cfg.hidden
+                prefs.apSecurity = cfg.security
+                prefs.apPmf = cfg.pmf
                 prefs.apContainerMode = cfg.containerMode
                 prefs.apContainer = cfg.containerName
             }
@@ -178,6 +184,17 @@ class APViewModel(application: Application) : AndroidViewModel(application) {
         config = config.copy(width = value)
     }
 
+    fun selectSecurity(value: String) {
+        config = config.copy(security = value)
+    }
+
+    fun setPmf(value: Boolean) {
+        config = config.copy(pmf = value)
+    }
+
+    /** Open networks need no passphrase; every WPA mode needs >= 8 chars. */
+    fun passwordRequired(): Boolean = config.security != "open"
+
     private fun refreshLog() {
         viewModelScope.launch {
             logText = APManager.readLog()
@@ -186,7 +203,8 @@ class APViewModel(application: Application) : AndroidViewModel(application) {
 
     fun start() {
         val cfg = config
-        if (cfg.ssid.isBlank() || cfg.password.length < 8) return
+        if (cfg.ssid.isBlank()) return
+        if (cfg.security != "open" && cfg.password.length < 8) return
         if (cfg.containerMode && cfg.containerName.isBlank()) return
         viewModelScope.launch {
             isStarting = true
@@ -199,6 +217,7 @@ class APViewModel(application: Application) : AndroidViewModel(application) {
                 cfg.width,
                 cfg.gateway, cfg.dnsServers.takeIf { it.isNotBlank() },
                 cfg.hidden,
+                cfg.security, cfg.pmf,
                 if (cfg.containerMode) cfg.containerName else ""
             ) { level, msg ->
                 actionLogs.add(level to msg)

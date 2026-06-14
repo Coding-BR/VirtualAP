@@ -75,6 +75,9 @@ CONFIG_IEEE80211N=y
 CONFIG_IEEE80211AC=y
 CONFIG_IEEE80211AX=y
 CONFIG_ACS=y
+# WPA3-Personal (SAE) + WPA2/WPA3 transition mode. Without this, hostapd rejects
+# wpa_key_mgmt=SAE at runtime (only WPA-PSK/WPA2 is understood).
+CONFIG_SAE=y
 EOF
 make clean >/dev/null 2>&1 || true
 # PKG_CONFIG --static pulls libnl-3/libnl-genl-3 + libcrypto static deps.
