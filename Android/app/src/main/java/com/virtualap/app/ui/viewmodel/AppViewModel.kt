@@ -113,9 +113,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             installStatus = InstallStatus.Checking
             val app = getApplication<Application>()
             val installed = withContext(Dispatchers.IO) {
-                // An outdated rootfs (APK update shipped a newer tarball) counts
-                // as not-installed so the setup flow re-extracts it.
-                APManager.isInstalled() && !VirtualAPInstaller.rootfsUpdateAvailable(app)
+                // An outdated payload (APK update shipped new binaries) counts
+                // as not-installed so the setup flow re-deploys them.
+                APManager.isInstalled() && !VirtualAPInstaller.payloadUpdateAvailable(app)
             }
             installStatus = if (installed) InstallStatus.Installed else InstallStatus.NotInstalled
         }

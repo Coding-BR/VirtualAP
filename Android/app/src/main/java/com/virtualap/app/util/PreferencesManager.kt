@@ -99,10 +99,10 @@ class PreferencesManager private constructor(context: Context) {
         get() = prefs.getBoolean(Constants.KEY_HAS_SEEN_ROOT_CHECK, false)
         set(value) { prefs.edit().putBoolean(Constants.KEY_HAS_SEEN_ROOT_CHECK, value).apply() }
 
-    /** Filename of the rootfs tarball that was last extracted (embeds the build date). */
-    var rootfsVersion: String
-        get() = prefs.getString(Constants.KEY_ROOTFS_VERSION, "") ?: ""
-        set(value) { prefs.edit().putString(Constants.KEY_ROOTFS_VERSION, value).apply() }
+    /** Hash of the static-binary payload last deployed (see VirtualAPInstaller). */
+    var payloadVersion: String
+        get() = prefs.getString(Constants.KEY_PAYLOAD_VERSION, "") ?: ""
+        set(value) { prefs.edit().putString(Constants.KEY_PAYLOAD_VERSION, value).apply() }
 
     companion object {
         @Volatile

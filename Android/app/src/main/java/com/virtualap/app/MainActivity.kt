@@ -53,12 +53,12 @@ class MainActivity : ComponentActivity() {
                     // Compute start destination once from SharedPreferences (synchronous read)
                     val prefs = remember { PreferencesManager.getInstance(applicationContext) }
                     val startDestination = remember {
-                        // An APK update can ship a newer rootfs tarball - send the
-                        // user back through setup so it gets re-extracted.
-                        val rootfsOutdated = VirtualAPInstaller.rootfsUpdateAvailable(applicationContext)
+                        // An APK update can ship new binaries - send the user
+                        // back through setup so they get re-deployed.
+                        val payloadOutdated = VirtualAPInstaller.payloadUpdateAvailable(applicationContext)
                         when {
                             !prefs.hasSeenRootCheck || !prefs.rootAvailable -> Screens.ROOT_CHECK
-                            prefs.isInstalled && !rootfsOutdated -> Screens.MAIN
+                            prefs.isInstalled && !payloadOutdated -> Screens.MAIN
                             else -> Screens.SETUP
                         }
                     }

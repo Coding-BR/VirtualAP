@@ -1,5 +1,6 @@
 import java.util.Properties
 import java.io.FileInputStream
+import java.security.MessageDigest
 
 plugins {
     id("com.android.application")
@@ -169,26 +170,21 @@ android {
 }
 
 // ---------------------------------------------------------------------------
-// prepareAssets: copies tools and rootfs tarball into assets directory.
-// Skips gracefully if source files don't exist.
+// prepareAssets: stages the backend script and the static AP-stack binaries
+// into the assets directory, plus a PAYLOAD_VERSION marker (a hash of the
+// binaries) that lets the app detect when an APK update ships new binaries.
 // ---------------------------------------------------------------------------
 tasks.register("prepareAssets") {
     doLast {
         val toolsSrc = file("../../backend")
-        val outDir = file("../../out")
         val assetTools = file("src/main/assets/backend")
         val assetBin = file("src/main/assets/bin")
-        val assetRootfs = file("src/main/assets/rootfs")
 
+        // Drop any stale chroot-era assets (rootfs tarball, vap.sh).
+        file("src/main/assets/rootfs").deleteRecursively()
         assetTools.mkdirs()
-        assetBin.mkdirs()
-        assetRootfs.mkdirs()
-
-        // Copy vap.sh
-        val vapSh = File(toolsSrc, "vap.sh")
-        require(vapSh.exists()) { "prepareAssets: vap.sh not found at ${vapSh.absolutePath}" }
-        vapSh.copyTo(File(assetTools, "vap.sh"), overwrite = true)
-        println("prepareAssets: copied vap.sh")
+        assetBin.deleteRecursively(); assetBin.mkdirs()
+        File(assetTools, "vap.sh").delete()
 
         // Copy start-ap
         val startAp = File(toolsSrc, "start-ap")
@@ -196,20 +192,24 @@ tasks.register("prepareAssets") {
         startAp.copyTo(File(assetTools, "start-ap"), overwrite = true)
         println("prepareAssets: copied start-ap")
 
-        // Copy busybox (extracted from rootfs by build_rootfs.sh)
-        val busybox = File(toolsSrc, "bin/busybox")
-        require(busybox.exists()) { "prepareAssets: busybox not found at ${busybox.absolutePath}. Run rootfs-builder/build_rootfs.sh first." }
-        busybox.copyTo(File(assetBin, "busybox"), overwrite = true)
-        println("prepareAssets: copied busybox")
+        // Copy the static binaries (busybox + hostapd/hostapd_cli/iw/dnsmasq).
+        val binSrc = File(toolsSrc, "bin")
+        val binaries = binSrc.listFiles()?.filter { it.isFile }?.sortedBy { it.name } ?: emptyList()
+        require(binaries.isNotEmpty()) {
+            "prepareAssets: no binaries in ${binSrc.absolutePath}. Run scripts/build-static.sh first."
+        }
+        val digest = MessageDigest.getInstance("SHA-256")
+        for (bin in binaries) {
+            bin.copyTo(File(assetBin, bin.name), overwrite = true)
+            digest.update(bin.name.toByteArray())
+            digest.update(bin.readBytes())
+            println("prepareAssets: copied ${bin.name}")
+        }
 
-        // Copy latest rootfs tarball
-        require(outDir.exists()) { "prepareAssets: out/ directory not found at ${outDir.absolutePath}. Run rootfs-builder/build_rootfs.sh first." }
-        val tarballs = outDir.listFiles()?.filter { it.name.endsWith(".tar.xz") }
-            ?.sortedByDescending { it.lastModified() }
-        val latest = tarballs?.firstOrNull()
-        require(latest != null) { "prepareAssets: no .tar.xz tarball found in ${outDir.absolutePath}. Run rootfs-builder/build_rootfs.sh first." }
-        latest.copyTo(File(assetRootfs, latest.name), overwrite = true)
-        println("prepareAssets: copied rootfs tarball ${latest.name}")
+        // Marker = hash of every binary, so it changes iff the binaries change.
+        val marker = digest.digest().joinToString("") { "%02x".format(it) }
+        File(assetBin, "PAYLOAD_VERSION").writeText(marker)
+        println("prepareAssets: payload version $marker")
     }
 }
 

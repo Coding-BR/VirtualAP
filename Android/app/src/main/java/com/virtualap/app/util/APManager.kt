@@ -129,9 +129,10 @@ object APManager {
 
     suspend fun isInstalled(): Boolean = withContext(Dispatchers.IO) {
         // Scripts run from app files now; "installed" means the root-owned
-        // payload is in place: busybox + an extracted Alpine rootfs.
+        // static binaries are in place under bin/.
         Shell.cmd(
-            "test -x ${Constants.BUSYBOX} && test -f ${Constants.VAP_DIR}/rootfs/etc/alpine-release && echo ok"
+            "test -x ${Constants.VAP_DIR}/bin/hostapd && test -x ${Constants.VAP_DIR}/bin/iw && " +
+            "test -x ${Constants.VAP_DIR}/bin/dnsmasq && test -x ${Constants.BUSYBOX} && echo ok"
         ).exec().out.any { it.contains("ok") }
     }
 }

@@ -7,23 +7,41 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 
+/**
+ * Deploys the static AP-stack binaries (hostapd/hostapd_cli/iw/dnsmasq/busybox)
+ * to /data/local/virtualap/bin. No chroot, no rootfs extraction - every binary
+ * is a fully-static aarch64 ELF that runs directly on Android.
+ *
+ * The bundled payload carries a version marker (assets/bin/PAYLOAD_VERSION, a
+ * hash of the binaries written by the prepareAssets gradle task). When the
+ * installed APK ships a different marker than the one last deployed, the setup
+ * flow re-runs - this is the whole "update backend" mechanism. Scripts run from
+ * the app files dir and can never go stale (see Backend).
+ */
 object VirtualAPInstaller {
 
-    /** Name of the rootfs tarball shipped in the installed APK, or null if missing. */
-    fun bundledRootfsName(context: Context): String? =
+    /** Marker asset whose content changes whenever the binaries change. */
+    private const val VERSION_MARKER = "PAYLOAD_VERSION"
+
+    /** Payload-version hash shipped in the installed APK, or null if missing. */
+    fun bundledPayloadVersion(context: Context): String? =
         runCatching {
-            context.assets.list("rootfs")?.firstOrNull { it.endsWith(".tar.xz") }
-        }.getOrNull()
+            context.assets.open("bin/$VERSION_MARKER").bufferedReader().use { it.readText().trim() }
+        }.getOrNull().takeUnless { it.isNullOrBlank() }
+
+    /** Binary names shipped under assets/bin (everything except the marker). */
+    private fun bundledBinaries(context: Context): List<String> =
+        runCatching {
+            context.assets.list("bin")?.filter { it != VERSION_MARKER } ?: emptyList()
+        }.getOrDefault(emptyList())
 
     /**
-     * True when the APK ships a different rootfs tarball than the one last
-     * extracted (the filename embeds the build date). Drives the re-run of the
-     * setup flow after an app update - this is the whole "update backend"
-     * mechanism; scripts themselves can never go stale (see Backend).
+     * True when the APK ships a different binary payload than the one last
+     * deployed. Drives the re-run of the setup flow after an app update.
      */
-    fun rootfsUpdateAvailable(context: Context): Boolean {
-        val bundled = bundledRootfsName(context) ?: return false
-        return PreferencesManager.getInstance(context).rootfsVersion != bundled
+    fun payloadUpdateAvailable(context: Context): Boolean {
+        val bundled = bundledPayloadVersion(context) ?: return false
+        return PreferencesManager.getInstance(context).payloadVersion != bundled
     }
 
     suspend fun install(
@@ -31,64 +49,50 @@ object VirtualAPInstaller {
         onProgress: (Int, String) -> Unit  // level, message
     ): Result<Unit> = withContext(Dispatchers.IO) {
         try {
-            val assetManager = context.assets
             val cacheDir = context.cacheDir
 
             // Step 0: A re-install (backend update) must not race a live backend.
-            // The namespace holder keeps busybox executing - cp over a running
-            // binary fails with ETXTBSY - and a running chroot keeps rootfs
-            // binaries busy the same way. Best-effort stop of both.
+            // Overwriting a binary some process still executes fails with
+            // ETXTBSY, so stop the AP first (deployAsset also unlinks first).
             onProgress(Log.INFO, "Stopping any running AP...")
-            Shell.cmd("${Backend.startAp} stop", "${Backend.vapSh} stop").exec()
+            Shell.cmd("${Backend.startAp} stop").exec()
 
-            // Step 1: Create directories. Scripts are NOT deployed here anymore -
-            // they run straight from the app's files dir (see Backend) so APK
-            // updates always take effect. Remove stale copies from old versions.
+            // Step 1: Create directories. Scripts are NOT deployed here - they run
+            // straight from the app's files dir (see Backend) so APK updates always
+            // take effect. Remove stale files from the old chroot-based versions.
             onProgress(Log.INFO, "Creating directories...")
             Shell.cmd(
-                "mkdir -p ${Constants.VAP_DIR}/bin ${Constants.VAP_DIR}/logs ${Constants.VAP_DIR}/rootfs",
-                "rm -f ${Constants.VAP_DIR}/vap.sh ${Constants.VAP_DIR}/start-ap"
+                "mkdir -p ${Constants.VAP_DIR}/bin ${Constants.VAP_DIR}/logs ${Constants.VAP_DIR}/run",
+                "rm -f ${Constants.VAP_DIR}/vap.sh ${Constants.VAP_DIR}/start-ap",
+                "rm -rf ${Constants.VAP_DIR}/rootfs"
             ).exec()
 
-            // Step 2: Deploy busybox
-            onProgress(Log.INFO, "Installing busybox...")
-            deployAsset(context, "bin/busybox", "${Constants.VAP_DIR}/bin/busybox", cacheDir)
-                ?.let { return@withContext Result.failure(it) }
-            Shell.cmd("chmod 755 ${Constants.VAP_DIR}/bin/busybox").exec()
-
-            // Step 3: Extract rootfs tarball
-            onProgress(Log.INFO, "Extracting Alpine rootfs (this takes a moment)...")
-            val tarAsset = bundledRootfsName(context)
-                ?: return@withContext Result.failure(Exception("No rootfs tarball found in assets/rootfs/. Run build_rootfs.sh first and rebuild the APK."))
-
-            val tempTar = File(cacheDir, tarAsset)
-            assetManager.open("rootfs/$tarAsset").use { input ->
-                tempTar.outputStream().use { input.copyTo(it) }
+            // Step 2: Deploy the static binaries.
+            val binaries = bundledBinaries(context)
+            if (binaries.isEmpty())
+                return@withContext Result.failure(
+                    Exception("No binaries found in assets/bin/. Run scripts/build-static.sh and rebuild the APK.")
+                )
+            for (name in binaries) {
+                onProgress(Log.INFO, "Installing $name...")
+                deployAsset(context, "bin/$name", "${Constants.VAP_DIR}/bin/$name", cacheDir)
+                    ?.let { return@withContext Result.failure(it) }
             }
-            onProgress(Log.INFO, "Unpacking $tarAsset...")
-            // Android's system tar has no xz support; use shipped busybox for both
-            // decompression (xzcat) and extraction (tar), piped to avoid a temp .tar file.
-            val extractResult = Shell.cmd(
-                "${Constants.BUSYBOX} xzcat '${tempTar.absolutePath}'" +
-                " | ${Constants.BUSYBOX} tar xf - -C '${Constants.VAP_DIR}/rootfs/' 2>&1"
-            ).exec()
-            tempTar.delete()
-            if (!extractResult.isSuccess) {
-                val errLines = (extractResult.out + extractResult.err)
-                    .joinToString("\n").ifBlank { "no output — check busybox xzcat/tar support" }
-                return@withContext Result.failure(Exception("rootfs extraction failed:\n$errLines"))
-            }
+            Shell.cmd("chmod 755 ${Constants.VAP_DIR}/bin/*").exec()
 
-            // Step 4: Verify
+            // Step 3: Verify every binary is in place and executable.
             onProgress(Log.INFO, "Verifying installation...")
-            val ok = Shell.cmd(
-                "test -x ${Constants.BUSYBOX} && test -f ${Constants.VAP_DIR}/rootfs/etc/alpine-release && echo ok"
-            ).exec().out.any { it.contains("ok") }
-            if (!ok) return@withContext Result.failure(Exception("Verification failed: busybox or rootfs missing after install"))
+            val verify = binaries.joinToString(" && ") { "test -x ${Constants.VAP_DIR}/bin/$it" }
+            val ok = Shell.cmd("$verify && echo ok").exec().out.any { it.contains("ok") }
+            if (!ok) return@withContext Result.failure(
+                Exception("Verification failed: a binary is missing or not executable after install")
+            )
 
-            // Record which rootfs is now deployed so future APK updates with a
-            // newer tarball can trigger a re-install.
-            PreferencesManager.getInstance(context).rootfsVersion = tarAsset
+            // Record which payload is now deployed so future APK updates with
+            // changed binaries can trigger a re-install.
+            bundledPayloadVersion(context)?.let {
+                PreferencesManager.getInstance(context).payloadVersion = it
+            }
 
             onProgress(Log.INFO, "Installation complete!")
             Result.success(Unit)
