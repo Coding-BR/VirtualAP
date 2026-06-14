@@ -71,6 +71,15 @@ cd "$SRC"
     wget -q "https://thekelleys.org.uk/dnsmasq/dnsmasq-$DM_VER.tar.xz"
 rm -rf "dnsmasq-$DM_VER" && tar xf "dnsmasq-$DM_VER.tar.xz"
 cd "dnsmasq-$DM_VER"
+# Android has no "root" entry in /etc/passwd and static musl (unlike bionic)
+# does not synthesize one, so dnsmasq's getpwnam("root") privilege-drop fails
+# with "unknown user or group: root". Skip the lookup when user=root: ent_pw
+# stays NULL, the setuid block is guarded by `if (ent_pw ...)`, so dnsmasq
+# simply stays root (which it needs anyway to bind :53/:67).
+sed -i \
+    's/if (daemon->username \&\& !(ent_pw = getpwnam(daemon->username)))/if (daemon->username \&\& strcmp(daemon->username, "root") != 0 \&\& !(ent_pw = getpwnam(daemon->username)))/' \
+    src/dnsmasq.c
+grep -q 'strcmp(daemon->username, "root")' src/dnsmasq.c || { echo "dnsmasq root-user patch FAILED to apply"; exit 1; }
 make clean >/dev/null 2>&1 || true
 # Default dnsmasq has no external lib deps; plain static link works.
 make -j"$(nproc)" CFLAGS="$CF" LDFLAGS="$LDF"

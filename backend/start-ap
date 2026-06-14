@@ -4,16 +4,22 @@
 # Copyright (c) 2026 ravindu644
 #
 # Creates a virtual AP (ap0): static gateway, DHCP+DNS via dnsmasq, selectable
-# upstream ("auto" follows netd's default-network rule). Wireless (iw/hostapd/
-# dnsmasq) runs in the Alpine chroot; routing/firewall use Android's
-# /system/bin ip + iptables.
+# upstream ("auto" follows netd's default-network rule). The whole AP stack
+# (iw/hostapd/dnsmasq) ships as fully-static aarch64 binaries under bin/ and
+# runs directly on Android - no chroot, no namespaces. Routing/firewall use
+# Android's own /system/bin ip + iptables.
 
 BASE_DIR="/data/local/virtualap"
-CHROOT_PATH="${BASE_DIR}/rootfs"
-HOLDER_PID_FILE="${BASE_DIR}/holder.pid"
+BIN_DIR="${BASE_DIR}/bin"
+RUN_DIR="${BASE_DIR}/run"
 CONF_FILE="${BASE_DIR}/ap.conf"
 STATE_FILE="${BASE_DIR}/run.state"
 LOG_FILE="${BASE_DIR}/logs/ap.log"
+
+# Static AP-stack binaries (replace the old Alpine chroot tools)
+HOSTAPD="${BIN_DIR}/hostapd"
+IW="${BIN_DIR}/iw"
+DNSMASQ="${BIN_DIR}/dnsmasq"
 
 IP="/system/bin/ip"
 IPT="/system/bin/iptables"
@@ -64,13 +70,10 @@ else
 fi
 
 SCRIPT_NAME="${0##*/}"
-# vap.sh lives next to this script (both run from the app's files dir,
-# re-extracted from APK assets every launch - see Backend.kt), not in BASE_DIR.
-VAP_SH="${0%/*}/vap.sh"
 
 # --- Busybox resolution ---
-if [ -x "$BASE_DIR/bin/busybox" ]; then
-    export BUSYBOX="$BASE_DIR/bin/busybox"
+if [ -x "$BIN_DIR/busybox" ]; then
+    export BUSYBOX="$BIN_DIR/busybox"
 elif command -v busybox >/dev/null 2>&1; then
     export BUSYBOX="busybox"
 else
@@ -78,9 +81,9 @@ else
     exit 1
 fi
 
-# Route external commands through the bundled busybox (Android's toybox is
-# unreliable across phones). Each $VAR word-splits to "busybox <applet>" - never
-# quote it. ip/iptables stay Android's; nsenter/unshare/chroot use "$BUSYBOX".
+# Route coreutils through the bundled busybox (Android's toybox is unreliable
+# across phones). Each $VAR word-splits to "busybox <applet>" - never quote it.
+# ip/iptables stay Android's; iw/hostapd/dnsmasq are our static binaries.
 BB="$BUSYBOX"
 CAT="$BB cat"
 CUT="$BB cut"
@@ -98,45 +101,11 @@ SLEEP="$BB sleep"
 TR="$BB tr"
 WC="$BB wc"
 
-$MKDIR -p "$BASE_DIR/logs"
+$MKDIR -p "$BASE_DIR/logs" "$RUN_DIR"
 
 log()   { $ECHO "$1";          $ECHO "[$($DATE '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"; }
 warn()  { $ECHO "[WARN] $1";   $ECHO "[$($DATE '+%Y-%m-%d %H:%M:%S')] [WARN] $1" >> "$LOG_FILE"; }
 error() { $ECHO "[ERROR] $1";  $ECHO "[$($DATE '+%Y-%m-%d %H:%M:%S')] [ERROR] $1" >> "$LOG_FILE"; }
-
-# --- Namespace plumbing (same pattern as vap.sh) ---
-
-_get_ns_flags() {
-    local flags_file="$HOLDER_PID_FILE.flags"
-    [ ! -f "$flags_file" ] && { $ECHO "-m"; return; }
-    local long_flags short_flags
-    long_flags=$($CAT "$flags_file")
-    [ -z "$long_flags" ] && { $ECHO "-m"; return; }
-    for flag in $long_flags; do
-        case "$flag" in
-            --mount) short_flags="$short_flags -m" ;;
-            --uts)   short_flags="$short_flags -u" ;;
-            --ipc)   short_flags="$short_flags -i" ;;
-            --pid)   short_flags="$short_flags -p" ;;
-        esac
-    done
-    [ -z "$short_flags" ] && { $ECHO "-m"; return; }
-    $ECHO "$short_flags"
-}
-
-_execute_in_ns() {
-    local holder_pid
-    if [ -f "$HOLDER_PID_FILE" ] && $KILL -0 "$($CAT "$HOLDER_PID_FILE")" 2>/dev/null; then
-        holder_pid=$($CAT "$HOLDER_PID_FILE")
-        "${BUSYBOX}" nsenter --target "$holder_pid" $(_get_ns_flags) -- "$@"
-    else
-        "$@"
-    fi
-}
-
-run_in_chroot() {
-    _execute_in_ns "$BUSYBOX" chroot "$CHROOT_PATH" /bin/sh -c "PATH=/usr/sbin:/usr/bin:/sbin:/bin; export TMPDIR=/tmp; $*"
-}
 
 # --- Config persistence ---
 
@@ -237,16 +206,16 @@ resolve_upstream() {
     return 0
 }
 
-# --- Wireless helpers (chroot iw) ---
+# --- Wireless helpers (static iw) ---
 
 sta_channel() {
     # Current channel of the STA connection, empty if not connected
-    run_in_chroot "iw dev $PHY_IFACE info" 2>/dev/null \
+    "$IW" dev "$PHY_IFACE" info 2>/dev/null \
         | $SED -n 's/.*channel \([0-9]*\).*/\1/p' | $HEAD -n1
 }
 
 reg_country() {
-    run_in_chroot "iw reg get" 2>/dev/null \
+    "$IW" reg get 2>/dev/null \
         | $SED -n 's/^country \([A-Z][A-Z]\):.*/\1/p' | $HEAD -n1
 }
 
@@ -328,23 +297,40 @@ calculate_subnet() {
 # --- Prerequisites ---
 
 check_prerequisites() {
-    [ -x "$IP" ] || { error "$IP not found"; return 1; }
-    [ -x "$IPT" ] || { error "$IPT not found"; return 1; }
-    run_in_chroot "command -v iw" >/dev/null 2>&1 || { error "iw not found in chroot"; return 1; }
-    run_in_chroot "command -v hostapd" >/dev/null 2>&1 || { error "hostapd not found in chroot"; return 1; }
-    run_in_chroot "command -v dnsmasq" >/dev/null 2>&1 || { error "dnsmasq not found in chroot"; return 1; }
+    [ -x "$IP" ]      || { error "$IP not found"; return 1; }
+    [ -x "$IPT" ]     || { error "$IPT not found"; return 1; }
+    [ -x "$IW" ]      || { error "iw not found at $IW"; return 1; }
+    [ -x "$HOSTAPD" ] || { error "hostapd not found at $HOSTAPD"; return 1; }
+    [ -x "$DNSMASQ" ] || { error "dnsmasq not found at $DNSMASQ"; return 1; }
     return 0
+}
+
+# dnsmasq forwards client DNS queries through this file. net.dns* props are
+# often empty on modern Android - public resolvers are the fallback.
+write_resolv_conf() {
+    local dns_lines=""
+    for i in 1 2 3 4; do
+        local dns
+        dns=$(getprop net.dns${i} 2>/dev/null)
+        [ -n "$dns" ] && dns_lines="${dns_lines}nameserver ${dns}\n"
+    done
+    [ -z "$dns_lines" ] && dns_lines="nameserver 1.1.1.1\nnameserver 8.8.8.8\n"
+    $PRINTF "$dns_lines" > "$RUN_DIR/resolv.conf"
 }
 
 # --- Teardown (mirrors setup exactly; every step tolerant) ---
 
+stop_daemons() {
+    [ -f "$RUN_DIR/hostapd.pid" ] && $KILL "$($CAT "$RUN_DIR/hostapd.pid")" 2>/dev/null
+    [ -f "$RUN_DIR/dnsmasq.pid" ] && $KILL "$($CAT "$RUN_DIR/dnsmasq.pid")" 2>/dev/null
+    $RM -f "$RUN_DIR/hostapd.pid" "$RUN_DIR/dnsmasq.pid" \
+           "$RUN_DIR/hostapd.conf" "$RUN_DIR/dnsmasq.conf"
+}
+
 teardown() {
     log "Bringing down $AP_IFACE and reverting settings..."
 
-    # Stop services via their pidfiles
-    run_in_chroot "[ -f /run/hostapd.pid ] && kill \$(cat /run/hostapd.pid) 2>/dev/null; \
-                   [ -f /run/dnsmasq.pid ] && kill \$(cat /run/dnsmasq.pid) 2>/dev/null; \
-                   rm -f /run/hostapd.pid /run/dnsmasq.pid /run/hostapd.conf /run/dnsmasq.conf" 2>/dev/null || true
+    stop_daemons
 
     # Policy rules - delete by pinned priority until none remain
     while "$IP" rule del pref "$PRIO_FROM_AP" 2>/dev/null; do :; done
@@ -365,8 +351,8 @@ teardown() {
         [ "$prev_fwd" = "0" ] && $ECHO 0 > /proc/sys/net/ipv4/ip_forward 2>/dev/null
     fi
 
-    # Delete the virtual interface (chroot iw, host ip as fallback)
-    run_in_chroot "iw dev $AP_IFACE del" 2>/dev/null \
+    # Delete the virtual interface (iw, host ip as fallback)
+    "$IW" dev "$AP_IFACE" del 2>/dev/null \
         || "$IP" link del "$AP_IFACE" 2>/dev/null || true
 
     $RM -f "$STATE_FILE"
@@ -379,13 +365,13 @@ teardown() {
 create_ap_iface() {
     log "Creating virtual AP interface '$AP_IFACE' on $PHY_IFACE..."
 
-    run_in_chroot "iw dev $AP_IFACE del" 2>/dev/null || true
+    "$IW" dev "$AP_IFACE" del 2>/dev/null || true
 
-    if ! run_in_chroot "iw dev $PHY_IFACE interface add $AP_IFACE type __ap"; then
+    if ! "$IW" dev "$PHY_IFACE" interface add "$AP_IFACE" type __ap; then
         error "Failed to create $AP_IFACE - chip/driver may not support AP mode."
         return 1
     fi
-    run_in_chroot "iw dev $AP_IFACE info" >/dev/null 2>&1 || {
+    "$IW" dev "$AP_IFACE" info >/dev/null 2>&1 || {
         error "$AP_IFACE was not created successfully"; return 1; }
     return 0
 }
@@ -450,8 +436,8 @@ EOF
     return 0
 }
 
-# Generate /run/hostapd.conf. $1 = optional bridge name: when set, hostapd
-# enslaves ap0 to that bridge itself (managed mode) and we run no dnsmasq/L3.
+# Generate hostapd.conf. $1 = optional bridge name: when set, hostapd enslaves
+# ap0 to that bridge itself (managed mode) and we run no dnsmasq/L3.
 write_hostapd_conf() {
     local hb="$1" country hw_mode extra
     country=$(reg_country)
@@ -464,10 +450,10 @@ ieee80211ac=1"
         extra="ieee80211n=1"
     fi
 
-    run_in_chroot "cat > /run/hostapd.conf" <<EOF
+    $CAT > "$RUN_DIR/hostapd.conf" <<EOF
 interface=$AP_IFACE
 driver=nl80211
-ctrl_interface=/run/hostapd
+ctrl_interface=$RUN_DIR/hostapd
 ${hb:+bridge=$hb}
 ssid=$SSID
 hw_mode=$hw_mode
@@ -485,14 +471,14 @@ EOF
 
 start_hostapd() {
     log "Starting hostapd..."
-    if ! run_in_chroot "hostapd -B -P /run/hostapd.pid /run/hostapd.conf"; then
+    if ! "$HOSTAPD" -B -P "$RUN_DIR/hostapd.pid" "$RUN_DIR/hostapd.conf"; then
         error "hostapd failed to start (check band/channel - try band 2)."
         return 1
     fi
     $SLEEP 2
-    run_in_chroot "[ -f /run/hostapd.pid ] && kill -0 \$(cat /run/hostapd.pid)" 2>/dev/null || {
+    [ -f "$RUN_DIR/hostapd.pid" ] && $KILL -0 "$($CAT "$RUN_DIR/hostapd.pid")" 2>/dev/null || {
         error "hostapd is not running after start"; return 1; }
-    log "hostapd running (PID $(run_in_chroot 'cat /run/hostapd.pid' 2>/dev/null))"
+    log "hostapd running (PID $($CAT "$RUN_DIR/hostapd.pid" 2>/dev/null))"
     return 0
 }
 
@@ -516,10 +502,11 @@ server=$clean_dns"
         done
         IFS="$old_ifs"
     else
-        dns_config="resolv-file=/etc/resolv.conf"
+        write_resolv_conf
+        dns_config="resolv-file=$RUN_DIR/resolv.conf"
     fi
 
-    run_in_chroot "cat > /run/dnsmasq.conf" <<EOF
+    $CAT > "$RUN_DIR/dnsmasq.conf" <<EOF
 interface=$AP_IFACE
 bind-interfaces
 except-interface=lo
@@ -527,24 +514,24 @@ listen-address=$IP_GW
 dhcp-range=$IP_BEGIN,$IP_END,12h
 dhcp-option=option:router,$IP_GW
 dhcp-option=option:dns-server,$IP_GW
-dhcp-leasefile=/run/dnsmasq.leases
+dhcp-leasefile=$RUN_DIR/dnsmasq.leases
 $dns_config
 no-hosts
-pid-file=/run/dnsmasq.pid
+pid-file=$RUN_DIR/dnsmasq.pid
 user=root
 EOF
 
     start_hostapd || return 1
 
     log "Starting dnsmasq..."
-    if ! run_in_chroot "dnsmasq -C /run/dnsmasq.conf"; then
+    if ! "$DNSMASQ" -C "$RUN_DIR/dnsmasq.conf"; then
         error "dnsmasq failed to start"
         return 1
     fi
     $SLEEP 1
-    run_in_chroot "[ -f /run/dnsmasq.pid ] && kill -0 \$(cat /run/dnsmasq.pid)" 2>/dev/null || {
+    [ -f "$RUN_DIR/dnsmasq.pid" ] && $KILL -0 "$($CAT "$RUN_DIR/dnsmasq.pid")" 2>/dev/null || {
         error "dnsmasq is not running after start"; return 1; }
-    log "dnsmasq running (PID $(run_in_chroot 'cat /run/dnsmasq.pid' 2>/dev/null))"
+    log "dnsmasq running (PID $($CAT "$RUN_DIR/dnsmasq.pid" 2>/dev/null))"
 
     return 0
 }
@@ -689,9 +676,8 @@ teardown_bridged() {
     log "Tearing down managed (bridged) AP..."
 
     # Stop hostapd (releases ap0 from the bridge), then delete ap0.
-    run_in_chroot "[ -f /run/hostapd.pid ] && kill \$(cat /run/hostapd.pid) 2>/dev/null; \
-                   rm -f /run/hostapd.pid /run/hostapd.conf" 2>/dev/null || true
-    run_in_chroot "iw dev $AP_IFACE del" 2>/dev/null || "$IP" link del "$AP_IFACE" 2>/dev/null || true
+    stop_daemons
+    "$IW" dev "$AP_IFACE" del 2>/dev/null || "$IP" link del "$AP_IFACE" 2>/dev/null || true
 
     # Delete host bridge + veth (busybox ip). This also removes VAP_PORT inside
     # the container; its uci LAN config is left intact.
@@ -737,14 +723,13 @@ cmd_start() {
     # before anything can fail - a failed attempt must not lose the config.
     save_conf
 
-    # Tear down any previous AP, then recycle the chroot: a fresh namespace per
-    # session reaps the zombie hostapd/dnsmasq the ns-init never wait()s for.
+    # Tear down any previous AP. Static daemons reparent to init and are reaped
+    # normally, so there is no chroot/namespace to recycle anymore.
     if [ -f "$STATE_FILE" ]; then
         log "Existing AP state found - restarting..."
         if $GREP -q '^mode=bridged' "$STATE_FILE"; then teardown_bridged; else teardown; fi
     fi
-    sh "$VAP_SH" stop -s >/dev/null 2>&1
-    sh "$VAP_SH" start -s || { error "Failed to start chroot environment"; exit 1; }
+    stop_daemons
 
     check_prerequisites || exit 1
 
@@ -780,17 +765,13 @@ cmd_start() {
     fi
 }
 
-# Full teardown: AP rules/services, then the whole chroot.
+# Full teardown of the routed-mode AP.
 full_stop() {
     teardown
-    sh "$VAP_SH" stop -s >/dev/null 2>&1
-    log "Chroot environment stopped."
 }
 
 full_stop_bridged() {
     teardown_bridged
-    sh "$VAP_SH" stop -s >/dev/null 2>&1
-    log "Chroot environment stopped."
 }
 
 cmd_stop() {
@@ -806,14 +787,14 @@ cmd_status() {
     [ -f "$STATE_FILE" ] && $GREP -q '^mode=bridged' "$STATE_FILE" && mode="bridged"
 
     if [ -f "$STATE_FILE" ]; then
-        run_in_chroot "[ -f /run/hostapd.pid ] && kill -0 \$(cat /run/hostapd.pid)" 2>/dev/null && hostapd_state="running"
+        [ -f "$RUN_DIR/hostapd.pid" ] && $KILL -0 "$($CAT "$RUN_DIR/hostapd.pid")" 2>/dev/null && hostapd_state="running"
         if [ "$mode" = "bridged" ]; then
             dnsmasq_state="container"   # DHCP/DNS served by the container, not us
         else
-            run_in_chroot "[ -f /run/dnsmasq.pid ] && kill -0 \$(cat /run/dnsmasq.pid)" 2>/dev/null && dnsmasq_state="running"
+            [ -f "$RUN_DIR/dnsmasq.pid" ] && $KILL -0 "$($CAT "$RUN_DIR/dnsmasq.pid")" 2>/dev/null && dnsmasq_state="running"
         fi
         [ "$hostapd_state" = "running" ] && running=1
-        clients=$(run_in_chroot "iw dev $AP_IFACE station dump" 2>/dev/null | $GREP -c '^Station')
+        clients=$("$IW" dev "$AP_IFACE" station dump 2>/dev/null | $GREP -c '^Station')
     fi
 
     $ECHO "running=$running"
@@ -830,7 +811,7 @@ cmd_status() {
 }
 
 cmd_leases() {
-    run_in_chroot "cat /run/dnsmasq.leases" 2>/dev/null
+    $CAT "$RUN_DIR/dnsmasq.leases" 2>/dev/null
 }
 
 cmd_interfaces() {
