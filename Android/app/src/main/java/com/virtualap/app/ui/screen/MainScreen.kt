@@ -267,7 +267,7 @@ fun MainScreen(
                                     DropdownMenuItem(
                                         text = { Text(label) },
                                         onClick = {
-                                            // Reset channel + width: valid options differ per band.
+                                            // Reset channel: valid channels differ per band.
                                             vm.selectBand(value)
                                             bandExpanded = false
                                         }
@@ -310,7 +310,6 @@ fun MainScreen(
                                     DropdownMenuItem(
                                         text = { Text(label) },
                                         onClick = {
-                                            // May clamp width to Auto if this channel is 20MHz-only.
                                             vm.selectChannel(value)
                                             channelExpanded = false
                                         }
@@ -320,9 +319,9 @@ fun MainScreen(
                         }
                         Spacer(Modifier.height(8.dp))
 
-                        // Width dropdown. Options unsupported by the current band /
-                        // chip are greyed out (2.4GHz is fixed to 20MHz; 40 needs
-                        // HT40, 80 needs VHT). The backend also downgrades safely.
+                        // Width dropdown. All options are always selectable; the
+                        // backend downgrades an unsupported width (wrong band/chip/
+                        // channel) to the widest it can actually bring up.
                         var widthExpanded by remember { mutableStateOf(false) }
                         val widthOptions = listOf(
                             autoLabel to "auto", "20 MHz" to "20",
@@ -350,7 +349,6 @@ fun MainScreen(
                                 widthOptions.forEach { (label, value) ->
                                     DropdownMenuItem(
                                         text = { Text(label) },
-                                        enabled = vm.widthEnabled(value),
                                         onClick = {
                                             vm.selectWidth(value)
                                             widthExpanded = false

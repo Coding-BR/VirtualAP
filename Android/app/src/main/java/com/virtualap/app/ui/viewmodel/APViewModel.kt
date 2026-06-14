@@ -11,7 +11,6 @@ import androidx.lifecycle.viewModelScope
 import androidx.compose.runtime.snapshotFlow
 import com.virtualap.app.util.APManager
 import com.virtualap.app.util.APStatus
-import com.virtualap.app.util.ApCaps
 import com.virtualap.app.util.NetworkIface
 import com.virtualap.app.util.PreferencesManager
 import kotlinx.coroutines.Job
@@ -57,9 +56,6 @@ class APViewModel(application: Application) : AndroidViewModel(application) {
     )
     var interfaces by mutableStateOf<List<NetworkIface>>(emptyList())
         private set
-    /** Chip channel-width capabilities (5GHz); drives width-option greying. */
-    var caps by mutableStateOf(ApCaps())
-        private set
     /** Running Droidspaces containers; empty = hide the integration UI entirely. */
     var containers by mutableStateOf<List<String>>(emptyList())
         private set
@@ -101,11 +97,9 @@ class APViewModel(application: Application) : AndroidViewModel(application) {
             val s = async { APManager.getStatus() }
             val ifs = async { APManager.getInterfaces() }
             val cs = async { APManager.getContainers() }
-            val cp = async { APManager.getCapabilities() }
             status = s.await()
             applyInterfaceList(ifs.await())
             applyContainerList(cs.await())
-            caps = cp.await()
             logText = APManager.readLog()
             isReady = true
             startPolling()
@@ -170,45 +164,14 @@ class APViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { applyInterfaceList(APManager.getInterfaces()) }
     }
 
-    /**
-     * Whether a width option is selectable for the current band + selected
-     * channel + chip caps. 2.4GHz is fixed to 20MHz (only Auto/20). On 5GHz,
-     * 40 needs HT40 and 80 needs VHT, AND the chosen channel must sit in a
-     * 40/80MHz block (e.g. channel 165 is 20MHz-only). Auto/20 always allowed.
-     */
-    fun widthEnabled(value: String): Boolean =
-        widthSupported(config.band, config.channel, value)
-
-    private fun widthSupported(band: String, channel: String, width: String): Boolean =
-        when (width) {
-            "auto", "20" -> true
-            "40" -> band == "5" && caps.ht40 && channelSupportsWide(channel)
-            "80" -> band == "5" && caps.vht && channelSupportsWide(channel)
-            else -> false
-        }
-
-    /**
-     * True if a 5GHz channel can carry a 40/80MHz block (mirrors the backend's
-     * vht_seg0). Blank = "Auto": the backend picks a wide-capable channel, so
-     * allow wide widths. 20MHz-only channels like 165 return false.
-     */
-    private fun channelSupportsWide(channel: String): Boolean {
-        if (channel.isBlank()) return true
-        val ch = channel.toIntOrNull() ?: return false
-        return ch in 36..48 || ch in 52..64 || ch in 100..112 ||
-            ch in 116..128 || ch in 132..144 || ch in 149..161
-    }
-
-    /** Switch band: channel + width options differ per band, so reset both. */
+    /** Switch band: valid channels differ per band, so reset to Auto. Width is
+     *  left to the user; the backend downgrades any unsupported width safely. */
     fun selectBand(value: String) {
-        config = config.copy(band = value, channel = "", width = "auto")
+        config = config.copy(band = value, channel = "")
     }
 
-    /** Switch channel, falling back to Auto width if it can't carry the current width. */
     fun selectChannel(value: String) {
-        val next = config.copy(channel = value)
-        config = if (widthSupported(next.band, value, next.width)) next
-                 else next.copy(width = "auto")
+        config = config.copy(channel = value)
     }
 
     fun selectWidth(value: String) {
